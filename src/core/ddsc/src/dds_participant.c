@@ -92,6 +92,7 @@ const struct dds_entity_deriver dds_entity_deriver_participant = {
 
 dds_entity_t dds_create_participant (const dds_domainid_t domain, const dds_qos_t *qos, const dds_listener_t *listener)
 {
+  // 声明变量和指针
   dds_domain *dom;
   dds_entity_t ret;
   ddsi_guid_t guid;
@@ -100,31 +101,43 @@ dds_entity_t dds_create_participant (const dds_domainid_t domain, const dds_qos_
   dds_qos_t *new_qos = NULL;
   const char *config = "";
 
+  // 确保DDS实例已经初始化：这行代码调用 dds_init() 函数来确保DDS实例已经初始化。如果初始化失败，则跳转到错误处理标签 err_dds_init。
   /* Make sure DDS instance is initialized. */
   if ((ret = dds_init ()) < 0)
     goto err_dds_init;
 
+  // 获取环境变量的值：该代码通过调用 ddsrt_getenv() 函数获取名为 CYCLONEDDS_URI 的环境变量的值，并将其存储在 config 变量中
   (void) ddsrt_getenv ("CYCLONEDDS_URI", &config);
 
+  // 创建域：这行代码调用 dds_domain_create_internal() 函数来创建一个域。它使用传入的 domain、config 和其他参数来创建域对象，
+  // 并将结果存储在 dom 变量中。如果创建失败，则跳转到错误处理标签 err_domain_create
   if ((ret = dds_domain_create_internal (&dom, domain, true, config)) < 0)
     goto err_domain_create;
 
-  new_qos = dds_create_qos ();
-  if (qos != NULL)
-    ddsi_xqos_mergein_missing (new_qos, qos, DDS_PARTICIPANT_QOS_MASK);
-  ddsi_xqos_mergein_missing (new_qos, &dom->gv.default_local_xqos_pp, ~(uint64_t)0);
-  dds_apply_entity_naming(new_qos, NULL, &dom->gv);
 
+  // 创建并合并质量服务设置：这些代码创建一个新的质量服务设置对象 new_qos，并根据传入的 qos 和默认本地设置进行合并。dds_create_qos() 创建新的质量服务设置对象，
+  // ddsi_xqos_mergein_missing() 用于合并质量服务设置，dds_apply_entity_naming() 用于应用实体命名规则。
+  new_qos = dds_create_qos (); //创建新的质量服务设置对象
+  if (qos != NULL)
+    ddsi_xqos_mergein_missing (new_qos, qos, DDS_PARTICIPANT_QOS_MASK);  //qos合并进入new_qos
+  dds_apply_entity_naming(new_qos, NULL, &dom->gv);  //用于应用实体命名规则。
+  
+  //可以将 dom->gv.default_local_xqos_pp 中的选项合并到 new_qos 中，
+  //确保在 new_qos 中存在所有在 dom->gv.default_local_xqos_pp 中出现的选项，同时不影响 new_qos 中已存在的选项。
+  ddsi_xqos_mergein_missing (new_qos, &dom->gv.default_local_xqos_pp, ~(uint64_t)0);   
+
+  //验证质量服务设置：ddsi_xqos_valid用于验证设置的有效性，检查日志配置，然后，检查活性设置是否为 DDS_LIVELINESS_AUTOMATIC。如果验证失败，则跳转到错误处理标签 err_qos_validation。
   if ((ret = ddsi_xqos_valid (&dom->gv.logconfig, new_qos)) < 0)
     goto err_qos_validation;
   // generic validation code will check lease duration, we only need to check kind
   // is what we insist on
-  if (new_qos->liveliness.kind != DDS_LIVELINESS_AUTOMATIC)
+  if (new_qos->liveliness.kind != DDS_LIVELINESS_AUTOMATIC)//要求参与者）以自动方式处理活动状态。这是系统对质量服务设置的特定要求之一，以确保一致的行为和交互，以确保参与者的活动状态以自动方式管理
   {
     ret = DDS_RETCODE_BAD_PARAMETER;
     goto err_qos_validation;
   }
 
+  // 创建 DDSI plist 对象和参与者：
   // DDSI layer wants a plist that it will copy, DDS layer takes ownership of QoS object
   // passed into entity_init.  That we have to copy the QoS into the plist here
   ddsi_plist_init_empty (&plist);
