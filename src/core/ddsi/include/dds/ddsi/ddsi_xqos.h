@@ -366,6 +366,7 @@ dds_return_t ddsi_xqos_valid (const struct ddsrt_log_cfg *logcfg, const dds_qos_
  * @param[in]     b       dds_qos_t from which to copy entries
  * @param[in]     mask    which to include (if DDSI_QP_X is set, include X)
  */
+// 用于将质量服务设置 b 中的特定条目（根据 mask 参数）合并到质量服务设置 a 中。
 void ddsi_xqos_mergein_missing (dds_qos_t *a, const dds_qos_t *b, uint64_t mask);
 
 /**

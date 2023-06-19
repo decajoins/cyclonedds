@@ -874,7 +874,9 @@ bool dds_qget_entity_name (const dds_qos_t * __restrict qos, char **name)
   return *name != NULL;
 }
 
+//这个函数的作用是为实体分配一个唯一的名称，以便在系统中进行识别和管理。
 void dds_apply_entity_naming(dds_qos_t *qos, /* optional */ dds_qos_t *parent_qos, struct ddsi_domaingv *gv) {
+  /*DDSI_QP_ENTITY_NAME是一个宏定义，用于表示DDS实体（Entity）的QoS属性中的实体名称（Entity Name）。该宏用作一个位掩码（bitmask），用于表示QoS属性中是否包含实体名称。*/
   if (gv->config.entity_naming_mode == DDSI_ENTITY_NAMING_DEFAULT_FANCY && !(qos->present & DDSI_QP_ENTITY_NAME)) {
     char name_buf[16];
     ddsrt_mutex_lock(&gv->naming_lock);
