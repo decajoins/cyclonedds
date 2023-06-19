@@ -210,6 +210,7 @@ static bool entity_kind_has_qos (dds_entity_kind_t kind)
 }
 #endif
 
+//完成初始化
 dds_entity_t dds_entity_init (dds_entity *e, dds_entity *parent, dds_entity_kind_t kind, bool implicit, bool user_access, dds_qos_t *qos, const dds_listener_t *listener, status_mask_t mask)
 {
   dds_handle_t handle;
