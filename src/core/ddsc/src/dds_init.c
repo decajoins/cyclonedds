@@ -98,6 +98,8 @@ dds_return_t dds_init (void)
       assert (dds_global.m_entity.m_hdllink.hdl == DDS_CYCLONEDDS_HANDLE);
       ddsrt_mutex_unlock (init_mutex);
       return DDS_RETCODE_OK;
+      //根据 CycloneDDS 的状态进行处理：如果状态为 CDDS_STATE_READY，表示 CycloneDDS 已经准备就绪，解锁互斥锁并返回 DDS_RETCODE_OK，表示初始化成功。
+      //如果状态为 CDDS_STATE_ZERO，表示 CycloneDDS 还未启动，将状态设置为 CDDS_STATE_STARTING。
     case CDDS_STATE_ZERO:
       ddsrt_atomic_st32 (&dds_state, CDDS_STATE_STARTING);
       break;

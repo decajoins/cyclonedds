@@ -217,6 +217,34 @@ static void data_avail_cb_trigger_waitsets (dds_entity *rd, uint32_t signal)
   }
 }
 
+
+/*
+on_data_available 回调函数和 dds_reader_data_available_cb 函数之间的关系通常是在 DDS（Data Distribution Service）中用于异步通知应用程序数据可用性变化的机制。
+
+on_data_available 回调函数： 这通常是由应用程序实现的回调函数，用于处理数据可用性变化事件。当与之相关联的实体（通常是数据读者）接收到新数据时，将触发此回调。应用程序可以在 on_data_available 中定义逻辑，以响应新数据的到达，执行数据处理、更新 UI 等操作。
+
+dds_reader_data_available_cb 函数： 这可能是 DDS 实现提供的函数，用于注册或设置数据可用性变化时要调用的回调函数。通过调用 dds_reader_data_available_cb，应用程序可以将 on_data_available 函数或其他处理逻辑与数据可用性事件关联起来。
+这样，每当数据读者有新数据可用时，DDS 实现将调用注册的回调函数，从而通知应用程序。
+*/
+
+/**
+锁定观察者锁： 获取数据读者的观察者锁，确保对观察者的访问是线程安全的。
+
+检查监听器设置： 查看监听器对象的配置，主要关注 on_data_on_readers 和 on_data_available 两个回调函数。这两个回调函数分别在 dds_listener 结构中定义。
+
+设置状态并触发回调： 如果 on_data_on_readers 和 on_data_available 都没有设置，或者都为 0，那么调用 data_avail_cb_set_status 设置数据可用性的状态，并将信号值保存在 signal 中。
+
+调用回调函数： 如果 on_data_on_readers 或 on_data_available 至少有一个被设置，根据设置的监听器对象来执行相应的逻辑：
+
+如果存在 on_data_on_readers 回调函数，调用该函数并触发相应的状态变化。
+如果存在 on_data_available 回调函数，调用该函数，并触发相应的状态变化。
+触发等待集： 最后，通过调用 data_avail_cb_trigger_waitsets 触发与该数据读者关联的等待集，以通知相关等待的线程有新数据可用。
+
+释放观察者锁： 最终释放观察者锁，确保其他线程可以访问观察者。
+
+关于 on_data_available 回调函数的机制，它是 DDS 的一种异步通知机制。当数据读者接收到新数据时，DDS 系统将调用用户定义的 on_data_available 回调函数。
+这使得应用程序能够异步地处理新到达的数据，而不需要轮询或阻塞等待。这有助于提高系统的响应性和效率。
+*/
 void dds_reader_data_available_cb (struct dds_reader *rd)
 {
   /* DATA_AVAILABLE is special in two ways: firstly, it should first try
@@ -234,27 +262,39 @@ void dds_reader_data_available_cb (struct dds_reader *rd)
   else
   {
     // "lock" listener object so we can look at "lst" without holding m_observers_lock
+    //锁定监听器对象：在这里，通过调用 data_avail_cb_enter_listener_exclusive_access 函数，"lock"（加锁）了监听器对象。这是为了能够在不持有 m_observers_lock 的情况下查看监听器对象 lst。
     data_avail_cb_enter_listener_exclusive_access (&rd->m_entity);
+    //如果监听器对象配置了 on_data_on_readers 回调，执行相应的逻辑
     if (lst->on_data_on_readers)
     {
+      //获取数据订阅者对象：
       dds_entity * const sub = rd->m_entity.m_parent;
+      //解锁数据读者，锁定数据订阅者：在此步骤中，解锁数据读者的观察者锁，然后锁定数据订阅者的观察者锁。这是为了避免死锁，并确保在处理数据订阅者时不会持有数据读者的锁。
       ddsrt_mutex_unlock (&rd->m_entity.m_observers_lock);
       ddsrt_mutex_lock (&sub->m_observers_lock);
+      //设置状态并触发回调
+      //如果 on_data_on_readers 回调被调用，并且没有设置重置状态，那么通过调用 data_avail_cb_set_status 设置数据可用性的状态。
+    // 然后，调用 data_avail_cb_invoke_dor 触发 on_data_on_readers 回调。
       if (!(lst->reset_on_invoke & DDS_DATA_ON_READERS_STATUS))
         signal = data_avail_cb_set_status (&rd->m_entity, status_and_mask);
       data_avail_cb_invoke_dor (sub, lst);
+      //完成数据订阅者的操作后，解锁数据订阅者的观察者锁，并重新锁定数据读者的观察者锁
       ddsrt_mutex_unlock (&sub->m_observers_lock);
       ddsrt_mutex_lock (&rd->m_entity.m_observers_lock);
     }
     else
     {
+      //确保 on_data_available 回调存在
       assert (rd->m_entity.m_listener.on_data_available);
       if (!(lst->reset_on_invoke & DDS_DATA_AVAILABLE_STATUS))
         signal = data_avail_cb_set_status (&rd->m_entity, status_and_mask);
       ddsrt_mutex_unlock (&rd->m_entity.m_observers_lock);
+      //如果没有设置重置状态，通过调用 data_avail_cb_set_status 设置数据可用性的状态。
+      // 然后，调用 on_data_available 回调
       lst->on_data_available (rd->m_entity.m_hdllink.hdl, lst->on_data_available_arg);
       ddsrt_mutex_lock (&rd->m_entity.m_observers_lock);
     }
+    //离开监听器对象的独占访问：
     data_avail_cb_leave_listener_exclusive_access (&rd->m_entity);
   }
   data_avail_cb_trigger_waitsets (&rd->m_entity, signal);

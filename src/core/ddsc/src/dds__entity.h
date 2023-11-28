@@ -67,8 +67,10 @@ void dds_entity_unpin_and_drop_ref (dds_entity *e);
   extern inline void type_##_unlock (type_ *x);
 
 /** @component generic_entity */
+//将给定的 struct dds_handle_link 结构体指针转换为对应的 dds_entity 结构体指针
+//这样相减，可以得到对应的 dds_entity 结构体的起始地址，从而将其转换为 dds_entity 结构体指针。
 inline dds_entity *dds_entity_from_handle_link (struct dds_handle_link *hdllink) {
-  return (dds_entity *) ((char *) hdllink - offsetof (struct dds_entity, m_hdllink));
+  return (dds_entity *) ((char *) hdllink - offsetof (struct dds_entity, m_hdllink));// m_hdllink 相对于 dds_entity 的起始地址的偏移量
 }
 
 /** @component generic_entity */

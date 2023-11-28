@@ -174,6 +174,54 @@ are transmitted on a separate thread.
       v
     APPLICATION
 
+ddsi_rmsg_new：
+保证接收缓冲区有足够的空间。
+通常在此分配新的缓冲区，这些缓冲区在整理或处理乱序接收的样本时保留数据。
+这些缓冲区的大小较大，以减少分配的次数。
+
+recvmsg：
+处理接收到的消息。
+
+do_packet/handle_submsg_sequence：
+
+  通常分配内存，通常是与接收到的数据报相邻的连续内存。
+
+  对于DATA/DATAFRAG/GAP等消息类型：
+  分配消息整理状态。
+  分配消息重排序状态。
+  这可能导致交付数据或丢弃片段，这可能会释放内存。
+
+  对于ACKNACK类型：
+  可能会从WHC（Writer History Cache）中丢弃消息，释放相关资源。
+
+  对于ACKNACK/NACKFRAG类型：
+  可能会排队重传、GAP和HEARTBEAT。
+  分配"xmsg"（类似于数据路径）和队列条目。
+  在发送后释放。
+
+deliver_user_data_synchronously：
+同步交付用户数据。
+处理序列化数据。
+在创建"serdata"之后释放接收缓冲区声明。
+
+rhc_store（每个读者一次）：
+如果实例标识尚未存在于其哈希表中，则分配新的"instance"。
+可能会增大实例哈希表。
+分配新的样本（通常）。
+可能会释放被推出历史记录的serdata。
+
+dds_take/dds_read：
+处理序列化数据并转换为应用程序表示。
+对于dds_take：
+如果引用计数降至零，则释放"serdata"。
+从读者历史记录中删除样本（可能包括实例）。
+可能涉及释放为实例标识映射和"untyped serdata"分配的内存。
+应用程序：
+
+处理应用程序逻辑。
+这个流程描述了数据的接收、处理和最终提供给应用程序的过程。各个步骤中可能涉及内存的分配和释放，具体取决于消息的类型以及处理逻辑
+
+
 There are a number of points worth noting in the above:
 
 * Cyclone defers freeing memory in some cases, relying on a garbage collector, but this

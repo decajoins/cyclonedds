@@ -910,7 +910,9 @@ void ddsi_fragchain_adjust_refcount (struct ddsi_rdata *frag, int adjust)
   while (frag)
   {
     struct ddsi_rdata * const frag1 = frag->nextfrag;
+    //rmbias 的作用是减去引用计数中的偏置值。
     ddsi_rdata_rmbias_and_adjust (frag, adjust);
+    //frag = frag1;：将 frag 更新为下一个分片，继续循环。
     frag = frag1;
   }
 }
@@ -1321,6 +1323,46 @@ static int defrag_limit_samples (struct ddsi_defrag *defrag, ddsi_seqno_t seq, d
   return 1;
 }
 
+
+/**
+ * 
+ddsi_receiver_state： 包含接收器状态的结构体，其中包括源和目标GUID前缀、回复定位器、厂商ID、协议版本等信息。这是接收器的基本状态。
+
+ddsi_rsample_info： 包含接收到的样本信息，如序列号、接收器状态、代理写入器、样本大小、时间戳等。
+
+ddsi_rsample_chain_elem和ddsi_rsample_chain： 这两个结构体表示样本的链式结构。ddsi_rsample_chain_elem
+包含一个样本的片段链，以及指向下一个元素的指针。ddsi_rsample_chain则表示整个样本链。
+
+rsample_info → rsample_chain → rsample_chain_elem： 
+对接收到的样本的信息可以链接成一个样本链，其中每个元素由ddsi_rsample_chain_elem结构表示。
+*/
+//创建一个 ddsi_rsample 结构表示接收到的数据。该函数用于将接收到的数据碎片重新组装成完整的数据样本（rsample）
+
+
+/*
+
+这个函数用于将接收到的数据片段（rdata）插入到用于重组消息的defrag结构中，并返回完整的消息（如果已经完整），或者返回NULL。
+
+defrag 是一个用于消息重组的数据结构。
+rdata 是接收到的数据片段。
+sampleinfo 包含有关接收到的数据片段的信息，如序列号（seq）、片段大小（size）等。
+函数返回 struct ddsi_rsample*，这是一个重组后的消息。
+
+接下来是函数的核心逻辑：
+
+如果 rdata 不是一个片段，即 ddsi_rdata_is_fragment 函数返回 false，则说明这个数据已经是完整的消息，直接调用 reorder_rsample_new 函数处理，并返回结果。
+
+如果 sampleinfo->seq 等于 defrag->max_sample->u.defrag.seq，说明这个片段属于当前正在重组的消息，将其添加到当前正在处理的消息中。
+
+如果 sampleinfo->seq 大于 defrag->max_sample->u.defrag.seq，说明这是一个新的消息，需要创建一个新的 dds_rsample 对象，并插入到defrag结构中。
+
+如果 sampleinfo->seq 小于 defrag->max_sample->u.defrag.seq，说明这是一个已知序列号的消息的片段，将其添加到对应的消息中。
+
+如果成功完成消息的重组，将其从defrag结构中移除，更新max_sample，然后将其转换为reorder格式。
+
+最终，函数返回已重组的消息或者NULL。
+
+*/
 struct ddsi_rsample *ddsi_defrag_rsample (struct ddsi_defrag *defrag, struct ddsi_rdata *rdata, const struct ddsi_rsample_info *sampleinfo)
 {
   /* Takes an rdata, records it in defrag if needed and returns an
@@ -1349,6 +1391,7 @@ struct ddsi_rsample *ddsi_defrag_rsample (struct ddsi_defrag *defrag, struct dds
   ddsi_seqno_t max_seq;
   ddsrt_avl_ipath_t path;
 
+//defrag 中的样本数量是否小于或等于允许的最大样本数。
   assert (defrag->n_samples <= defrag->max_samples);
 
   /* not a fragment => always complete, so refcount rdata, turn into a
@@ -1359,6 +1402,8 @@ struct ddsi_rsample *ddsi_defrag_rsample (struct ddsi_defrag *defrag, struct dds
   /* max_seq is used for the fast path, and is 0 when there is no
      last message in 'defrag'. max_seq and max_sample must be
      consistent. Max_sample must be consistent with tree */
+     //首先，它通过 AVL 树找到 defrag 中样本的最大序列号，并将其与 defrag->max_sample 进行断言验证，确保它们一致。
+     //接着，max_seq 被赋值为 defrag->max_sample 的序列号，如果没有最大样本，则为 0。
   assert (defrag->max_sample == ddsrt_avl_find_max (&defrag_sampletree_treedef, &defrag->sampletree));
   max_seq = defrag->max_sample ? defrag->max_sample->u.defrag.seq : 0;
   TRACE (defrag, "defrag_rsample(%p, %p [%"PRIu32"..%"PRIu32") msg %p, %p seq %"PRIu64" size %"PRIu32") max_seq %p %"PRIu64":\n",
@@ -1367,16 +1412,19 @@ struct ddsi_rsample *ddsi_defrag_rsample (struct ddsi_defrag *defrag, struct dds
          (void *) defrag->max_sample, max_seq);
   /* fast path: rdata is part of message with the highest sequence
      number we're currently defragmenting, or is beyond that */
+     //如果传入片段的序列号与 max_seq（最大序列号）匹配，这意味着该片段属于当前正在处理的消息。调用 defrag_add_fragment 将该片段添加到当前消息中。
   if (sampleinfo->seq == max_seq)
   {
     TRACE (defrag, "  add fragment to max_sample\n");
     result = defrag_add_fragment (defrag, defrag->max_sample, rdata, sampleinfo);
   }
+  //如果传入片段的序列号大于 max_seq，这是一个新的消息。defrag_limit_samples 检查样本数量是否超过允许的最大数量，如果是，则函数返回 NULL。
   else if (!defrag_limit_samples (defrag, sampleinfo->seq, &max_seq))
   {
     TRACE (defrag, "  discarding sample\n");
     result = NULL;
   }
+  //如果传入片段的序列号大于 max_seq，这是一个新的消息。创建一个新的 ddsi_rsample，将其插入 AVL 树中，并更新 max_sample。
   else if (sampleinfo->seq > max_seq)
   {
     /* a node with a key greater than the maximum always is the right
@@ -1391,6 +1439,7 @@ struct ddsi_rsample *ddsi_defrag_rsample (struct ddsi_defrag *defrag, struct dds
     defrag->n_samples++;
     result = NULL;
   }
+  //如果传入片段的序列号小于 max_seq 但仍然是新的序列号，创建一个新的 ddsi_rsample 并将其插入 AVL 树中。
   else if ((sample = ddsrt_avl_lookup_ipath (&defrag_sampletree_treedef, &defrag->sampletree, &sampleinfo->seq, &path)) == NULL)
   {
     /* a new sequence number, but smaller than the maximum */
@@ -1402,12 +1451,15 @@ struct ddsi_rsample *ddsi_defrag_rsample (struct ddsi_defrag *defrag, struct dds
     defrag->n_samples++;
     result = NULL;
   }
+  //如果该片段属于现有消息（不是新的），调用 defrag_add_fragment 将该片段添加到相应的 ddsi_rsample 中。
   else
   {
     /* adds (or, as the case may be, doesn't add) to a known message */
     TRACE (defrag, "  add fragment to %p\n", (void *) sample);
     result = defrag_add_fragment (defrag, sample, rdata, sampleinfo);
   }
+
+  //如果 result 不为 NULL，这意味着一个消息已经完成。这部分代码从 AVL 树中删除消息，更新 max_sample，并将 ddsi_rsample 从 defrag 转换为 reorder 格式。
 
   if (result != NULL)
   {
@@ -1427,6 +1479,7 @@ struct ddsi_rsample *ddsi_defrag_rsample (struct ddsi_defrag *defrag, struct dds
     rsample_convert_defrag_to_reorder (result);
   }
 
+//最后，断言确保 defrag 的 max_sample 与 AVL 树中的最大样本一致，然后返回 result。
   assert (defrag->max_sample == ddsrt_avl_find_max (&defrag_sampletree_treedef, &defrag->sampletree));
   return result;
 }
@@ -1650,6 +1703,27 @@ void ddsi_defrag_prune (struct ddsi_defrag *defrag, ddsi_guid_prefix_t *dst, dds
    based on the fragment chain instead of the sample.  Example code is
    in the overview comment at the top of this file. */
 
+/*
+sampleivtree: AVL 树，用于存储按序列号排序的 ddsi_rsample 结构体，表示接收到的样本。AVL 树是一种自平衡的二叉搜索树，确保了样本在树中以有序的方式存储，有助于高效的查找和插入操作。
+
+max_sampleiv: 指向 AVL 树中序列号最大的样本（ddsi_rsample）。即，这是树中具有最大序列号的节点，表示当前接收到的样本中序列号最大的一个。
+
+next_seq: 下一个期望接收的样本的序列号。在重新排序的过程中，这个值用于确定下一个应该接收的样本的序列号。
+
+mode: 枚举类型 ddsi_reorder_mode，表示重新排序的模式。可能的值包括 DDSI_REORDER_MODE_MONOTONICALLY_INCREASING 和 DDSI_REORDER_MODE_ALWAYS_DELIVER。
+
+max_samples: 指定在重新排序中最多保留的样本数目。
+
+n_samples: 当前在重新排序结构中存储的样本数量。
+
+discarded_bytes: 记录已丢弃样本的字节数。这个字段似乎用于跟踪在重新排序过程中由于某些原因而被丢弃的样本的大小。
+
+logcfg: 指向一个日志配置结构，可能用于记录相关事件和调试信息。
+
+late_ack_mode: 一个布尔值，表示是否启用了"late ack"模式。
+
+trace: 一个布尔值，表示是否启用了跟踪（trace）模式，用于记录详细的执行信息。
+*/
 struct ddsi_reorder {
   ddsrt_avl_tree_t sampleivtree;
   struct ddsi_rsample *max_sampleiv; /* = max(sampleivtree) */
@@ -1892,6 +1966,43 @@ static void delete_last_sample (struct ddsi_reorder *reorder)
   ddsi_fragchain_unref (fragchain);
 }
 
+/*
+
+这段代码是用于数据重组和排序的一部分，主要功能是将接收到的数据按照一定的规则进行排序，以确保按序传递给上层应用。
+
+具体而言，这是一个用于重排序的函数，对于接收到的样本（rsampleiv），它会根据其序列号（seq）和一些规则将其插入到重排序管理器（reorder）中。
+这个管理器维护了一个有序的数据结构，以确保按照正确的顺序传递数据。
+
+这个函数的逻辑主要包括：
+
+1.判断是否可以立即传递样本： 如果接收到的样本的序列号等于管理器期望的下一个序列号，或者满足一些特定条件，那么这个样本可以立即传递，而不需要进行排序。这主要用于提高效率。
+
+2.处理不同情况下的插入： 根据样本的序列号和已有数据的情况，决定如何插入这个样本。可能的情况包括：
+  样本过时（太老）：直接丢弃。
+  样本可以附加到已有的区间。
+  样本成为新的区间。
+3.样本的合并和删除： 如果插入后，已有的区间可以与新样本合并，则进行合并。管理器还维护一个最大样本数，如果超过了这个数目，就需要删除最旧的样本。
+*/
+
+/**
+
+这段代码是一个函数，用于将一个 rsample（表示为一个区间）添加到重新排序管理器（reorder admin）中，并返回由于插入而准备传递的一系列连续的样本。以下是逐行的解释：
+
+ddsi_reorder_result_t ddsi_reorder_rsample(struct ddsi_rsample_chain *sc, struct ddsi_reorder *reorder, struct ddsi_rsample *rsampleiv, int *refcount_adjust, int delivery_queue_full_p)
+{
+ddsi_reorder_result_t：这是一个自定义的数据类型，表示重新排序的结果类型，可以是 DDSI_REORDER_ACCEPT、DDSI_REORDER_REJECT、DDSI_REORDER_TOO_OLD 等。
+
+struct ddsi_rsample_chain *sc：这是指向一个 ddsi_rsample_chain 结构体的指针，表示重新排序的样本链。
+
+struct ddsi_reorder *reorder：这是指向重新排序管理器的指针，其中包含了关于重新排序的一些信息。
+
+struct ddsi_rsample *rsampleiv：这是指向一个 rsample 的指针，表示要插入的样本。
+
+int *refcount_adjust：这是一个整数指针，用于记录引用计数的调整值。refcount_adjust is incremented if the sample is not discarded.
+在这里，似乎是为了记录处理过的样本，以便在后续的流程中进行适当的内存管理或释放。也就是说，如果样本没有被丢弃，refcount_adjust 就会增加。这可能意味着样本在后续的处理中仍然需要被引用，需要保持存活状态。在函数的最后，你可以看到：
+
+int delivery_queue_full_p：这是一个标志，表示传递队列是否已满。
+*/
 ddsi_reorder_result_t ddsi_reorder_rsample (struct ddsi_rsample_chain *sc, struct ddsi_reorder *reorder, struct ddsi_rsample *rsampleiv, int *refcount_adjust, int delivery_queue_full_p)
 {
   /* Adds an rsample (represented as an interval) to the reorder admin
@@ -1901,8 +2012,10 @@ ddsi_reorder_result_t ddsi_reorder_rsample (struct ddsi_rsample_chain *sc, struc
      chain.
 
      refcount_adjust is incremented if the sample is not discarded. */
+     //这里将 rsample 转换为 rsample_reorder 结构，以方便后续操作
   struct ddsi_rsample_reorder *s = &rsampleiv->u.reorder;
 
+  //这是一条日志，用于记录重新排序的一些信息，如重新排序管理器的地址、模式、样本的最小值、最大值等。
   TRACE (reorder, "reorder_sample(%p %c, %"PRIu64" @ %p) expecting %"PRIu64":\n",
          (void *) reorder, reorder_mode_as_char (reorder), rsampleiv->u.reorder.min,
          (void *) rsampleiv, reorder->next_seq);
@@ -1912,6 +2025,7 @@ ddsi_reorder_result_t ddsi_reorder_rsample (struct ddsi_rsample_chain *sc, struc
 
   /* Reorder must not contain samples with sequence numbers <= next
      seq; max must be set iff the reorder is non-empty. */
+     //这部分包含了一些调试时的断言，用于检查重新排序管理器的状态是否符合预期。
 #ifndef NDEBUG
   {
     struct ddsi_rsample *min = ddsrt_avl_find_min (&reorder_sampleivtree_treedef, &reorder->sampleivtree);
@@ -1922,13 +2036,14 @@ ddsi_reorder_result_t ddsi_reorder_rsample (struct ddsi_rsample_chain *sc, struc
             (reorder->max_sampleiv != NULL && min != NULL));
   }
 #endif
+//这是一些关于重新排序管理器状态的额外检查，确保状态一致性。
   assert ((!!ddsrt_avl_is_empty (&reorder->sampleivtree)) == (reorder->max_sampleiv == NULL));
   assert (reorder->max_sampleiv == NULL || reorder->max_sampleiv == ddsrt_avl_find_max (&reorder_sampleivtree_treedef, &reorder->sampleivtree));
   assert (reorder->n_samples <= reorder->max_samples);
   if (reorder->max_sampleiv)
     TRACE (reorder, "  max = [%"PRIu64",%"PRIu64") @ %p\n", reorder->max_sampleiv->u.reorder.min,
            reorder->max_sampleiv->u.reorder.maxp1, (void *) reorder->max_sampleiv);
-
+//如果样本的最小序列号等于 next_seq，或者大于 next_seq 且重新排序模式是单调递增，或者重新排序模式是总是传递，那么可以传递至少一个样本。
   if (s->min == reorder->next_seq ||
       (s->min > reorder->next_seq && reorder->mode == DDSI_REORDER_MODE_MONOTONICALLY_INCREASING) ||
       reorder->mode == DDSI_REORDER_MODE_ALWAYS_DELIVER)
@@ -1939,6 +2054,7 @@ ddsi_reorder_result_t ddsi_reorder_rsample (struct ddsi_rsample_chain *sc, struc
        a great idea.  Therefore, we simply reject the sample.  (We
        have to, we can't have a deliverable sample in the reorder
        admin, or things go wrong very quickly.) */
+       //如果传递队列已满，则拒绝传递可传递的样本。
     if (delivery_queue_full_p)
     {
       TRACE (reorder, "  discarding deliverable sample: delivery queue is full\n");
@@ -1950,6 +2066,22 @@ ddsi_reorder_result_t ddsi_reorder_rsample (struct ddsi_rsample_chain *sc, struc
        first interval in the tree to it.  We can avoid all processing
        if the index is empty, which is the normal case.  Unreliable
        out-of-order either ends up here or in discard.)  */
+       //如果有最大样本，并且重新排序尝试追加并丢弃操作成功，则将 max_sampleiv 设为 NULL。
+       //然后更新 next_seq，将 sc 设置为 rsample 的样本链，增加 refcount_adjust，并记录一些日志。
+
+       /*
+       如果 max_sampleiv 不为 NULL，说明存在待交付的样本，这时会尝试调用 reorder_try_append_and_discard 函数，
+       将当前接收到的样本附加到 AVL 树中序列号最小的样本之后，
+       并执行一些可能的丢弃操作。如果成功附加并且有样本被丢弃，将 max_sampleiv 设置为 NULL，表示重新排序管理器不再有待交付的样本。
+
+        然后，将 next_seq 设置为当前样本的最大序列号加一。这是为了更新下一个期望接收的样本的序列号。
+
+        将 sc（ddsi_rsample_chain 结构）设置为当前样本的 u.reorder.sc 字段，该字段包含了样本链的信息。
+
+        增加 refcount_adjust，这是一个指向整数的指针，可能是用于调整引用计数的。
+
+        最后，通过返回 s->n_samples 表示成功附加的样本数量。在这之前，还会调整重新排序管理器的 n_samples 字段，确保新样本没有被重复计数。
+       */
     if (reorder->max_sampleiv != NULL)
     {
       struct ddsi_rsample *min = ddsrt_avl_find_min (&reorder_sampleivtree_treedef, &reorder->sampleivtree);
@@ -1963,6 +2095,7 @@ ddsi_reorder_result_t ddsi_reorder_rsample (struct ddsi_rsample_chain *sc, struc
     TRACE (reorder, "  return [%"PRIu64",%"PRIu64")\n", s->min, s->maxp1);
 
     /* Adjust reorder->n_samples, new sample is not counted yet */
+    //调整重新排序管理器的样本数量。
     assert (s->maxp1 - s->min >= 1);
     assert (s->maxp1 - s->min <= (int) INT32_MAX);
     assert (s->min + s->n_samples <= s->maxp1);
@@ -1970,6 +2103,7 @@ ddsi_reorder_result_t ddsi_reorder_rsample (struct ddsi_rsample_chain *sc, struc
     reorder->n_samples -= s->n_samples - 1;
     return (ddsi_reorder_result_t) s->n_samples;
   }
+  //如果样本的最小序列号小于 reorder 的下一个期望序列号，说明该样本已过时，因此拒绝传递并返回 DDSI_REORDER_TOO_OLD。
   else if (s->min < reorder->next_seq)
   {
     /* we've moved beyond this one: discard it; no need to adjust
@@ -1978,6 +2112,8 @@ ddsi_reorder_result_t ddsi_reorder_rsample (struct ddsi_rsample_chain *sc, struc
     reorder->discarded_bytes += s->sc.first->sampleinfo->size;
     return DDSI_REORDER_TOO_OLD; /* don't want refcount increment */
   }
+
+  //如果样本存储为空，且重新排序管理器的样本数量为零，将样本添加到空的存储中。如果 max_samples 为零，则拒绝插入。
   else if (ddsrt_avl_is_empty (&reorder->sampleivtree))
   {
     /* else, if nothing's stored simply add this one, max_samples = 0
@@ -1998,6 +2134,7 @@ ddsi_reorder_result_t ddsi_reorder_rsample (struct ddsi_rsample_chain *sc, struc
       reorder->n_samples++;
     }
   }
+  //如果样本的最小序列号等于 max_sampleiv 的最大加一，即样本紧接在最后的区间之后，将该样本附加到最后的区间中。如果传递队列已满，则拒绝。
   else if (((void) assert (reorder->max_sampleiv != NULL)), (s->min == reorder->max_sampleiv->u.reorder.maxp1))
   {
     /* (sampleivtree not empty) <=> (max_sampleiv is non-NULL), for which there is an assert at the beginning but compilers and static analyzers don't all quite get that ... the somewhat crazy assert shuts up Clang's static analyzer */
@@ -2023,6 +2160,7 @@ ddsi_reorder_result_t ddsi_reorder_rsample (struct ddsi_rsample_chain *sc, struc
       return DDSI_REORDER_REJECT;
     }
   }
+  //如果样本的最小序列号大于 max_sampleiv 的最大加一，即样本在最后的区间之后，将新的样本作为新的区间添加到存储中。如果传递队列已满，则拒绝。
   else if (s->min > reorder->max_sampleiv->u.reorder.maxp1)
   {
     if (delivery_queue_full_p)
@@ -2047,7 +2185,7 @@ ddsi_reorder_result_t ddsi_reorder_rsample (struct ddsi_rsample_chain *sc, struc
     }
   }
   else
-  {
+  {//处理较为复杂的情况，需要查找前驱区间 predeq 和后继区间 immsucc。
     /* lookup interval predeq=[m,n) s.t. m <= s->min and
        immsucc=[m',n') s.t. m' = s->maxp1:
 
@@ -2055,6 +2193,7 @@ ddsi_reorder_result_t ddsi_reorder_rsample (struct ddsi_rsample_chain *sc, struc
        - if n=s->min we can append s to predeq
        - if immsucc exists we can prepend s to immsucc
        - and possibly join predeq, s, and immsucc */
+       //假设有一个数据流，按序产生的样本序列是 [1, 2, 3, 4, 5, 8, 6, 7, 9]，但由于某些原因，样本可能会乱序到达。系统希望将这些乱序的样本重新排序，以确保按序交付。
     struct ddsi_rsample *predeq, *immsucc;
     TRACE (reorder, "  hard case ...\n");
 
@@ -2065,6 +2204,13 @@ ddsi_reorder_result_t ddsi_reorder_rsample (struct ddsi_rsample_chain *sc, struc
       return DDSI_REORDER_REJECT;
     }
 
+    //predeq 区间检查：
+
+    // 假设 AVL 树中已经有一个前驱区间 predeq = [1, 3]。
+    // 当新样本 s 的序列号为 2 时，由于 2 完全包含在 predeq 区间内，所以该样本会被丢弃。
+    // 返回 DDSI_REORDER_REJECT。
+
+  //如果样本完全包含在 predeq 区间内，则丢弃该样本并返回 DDSI_REORDER_REJECT。
     predeq = ddsrt_avl_lookup_pred_eq (&reorder_sampleivtree_treedef, &reorder->sampleivtree, &s->min);
     if (predeq)
       TRACE (reorder, "  predeq = [%"PRIu64",%"PRIu64") @ %p\n",
@@ -2085,6 +2231,17 @@ ddsi_reorder_result_t ddsi_reorder_rsample (struct ddsi_rsample_chain *sc, struc
              immsucc->u.reorder.min, immsucc->u.reorder.maxp1, (void *) immsucc);
     else
       TRACE (reorder, "  immsucc = null\n");
+      //如果前驱区间 predeq 存在，且样本的最小序列号等于 predeq 区间的最大加一，
+//即样本的开始刚好在前驱区间的末尾，将样本附加到前驱区间的末尾。然后尝试追加并丢弃操作，最后更新 max_sampleiv。
+
+      /**
+      前驱区间存在，样本开始刚好在前驱区间的末尾：
+
+      AVL 树中已有前驱区间 predeq = [1, 3]。
+      新样本 s 的序列号为 4，与 predeq 区间的最大序列号 3 相差 1。
+      将样本 s 附加到 predeq 区间的末尾，形成 [1, 3, 4]。
+      尝试追加并丢弃操作，最后更新 max_sampleiv。
+      */
     if (predeq && s->min == predeq->u.reorder.maxp1)
     {
       /* grow predeq at end, and maybe append immsucc as well */
@@ -2093,6 +2250,14 @@ ddsi_reorder_result_t ddsi_reorder_rsample (struct ddsi_rsample_chain *sc, struc
       if (reorder_try_append_and_discard (reorder, predeq, immsucc))
         reorder->max_sampleiv = predeq;
     }
+    //如果只有后继区间 immsucc，将样本附加到后继区间的开头。然后交换 immsucc 和当前样本在 AVL 树中的位置，并更新 max_sampleiv。
+    
+    // 只有后继区间 immsucc：
+
+    // AVL 树中存在一个后继区间 immsucc = [6, 9]。
+    // 新样本 s 的序列号为 5。
+    // 将样本 s 附加到 immsucc 区间的开头，形成 [5, 6, 9]。
+    // 交换 immsucc 和当前样本在 AVL 树中的位置，更新 max_sampleiv。
     else if (immsucc)
     {
       /* no predecessor, grow immsucc at head, which _does_ alter the
@@ -2121,6 +2286,16 @@ ddsi_reorder_result_t ddsi_reorder_rsample (struct ddsi_rsample_chain *sc, struc
       if (immsucc == reorder->max_sampleiv)
         reorder->max_sampleiv = rsampleiv;
     }
+    //如果样本既不在前驱区间中，也不在后继区间中，说明是一个新的区间。将样本添加到存储中。然后检查是否允许重新排序管理器的样本数量超过最大样本数量，
+    //如果允许，则递增 n_samples，否则删除最后一个样本。最后，递增 refcount_adjust，并返回 DDSI_REORDER_ACCEPT。
+
+    // 样本既不在前驱区间中，也不在后继区间中，是一个新的区间：
+
+    // AVL 树中没有包含样本 s 的区间。
+    // 将样本 s 添加到存储中，形成新的区间 [8, 8]。
+    // 如果允许重新排序管理器的样本数量超过最大样本数量，则递增 n_samples。
+    // 否则，删除最后一个样本。
+    // 最后，递增 refcount_adjust 并返回 DDSI_REORDER_ACCEPT
     else
     {
       /* neither extends predeq nor immsucc */

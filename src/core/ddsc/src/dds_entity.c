@@ -252,17 +252,17 @@ dds_entity_t dds_entity_init (dds_entity *e, dds_entity *parent, dds_entity_kind
   }
   else
   {
-    assert (kind == DDS_KIND_CYCLONEDDS);
+    assert (kind == DDS_KIND_CYCLONEDDS);  //根节点（CycloneDDS），将父实体和域都设置为 NULL。
     e->m_parent = NULL;
     e->m_domain = NULL;
   }
-  ddsrt_avl_init (&dds_entity_children_td, &e->m_children);
+  ddsrt_avl_init (&dds_entity_children_td, &e->m_children);  //初始化子实体的 AVL 树
 
-  dds_reset_listener (&e->m_listener);
+  dds_reset_listener (&e->m_listener);  //使用父实体的监听器，并将其与当前实体的监听器合并。
   if (listener)
     dds_merge_listener (&e->m_listener, listener);
 
-  /* Special case: the on_data_on_readers event doesn't exist on DataReaders. */
+  /* Special case: the on_data_on_readers event doesn't exist on DataReaders. */  //DDS_KIND_READER，则将 on_data_on_readers 事件设置为 0，因为 DataReader 没有该事件。
   if (kind == DDS_KIND_READER)
     e->m_listener.on_data_on_readers = 0;
 
@@ -273,16 +273,16 @@ dds_entity_t dds_entity_init (dds_entity *e, dds_entity *parent, dds_entity_kind
     ddsrt_mutex_unlock (&parent->m_observers_lock);
   }
 
-  if (kind == DDS_KIND_CYCLONEDDS)
+  if (kind == DDS_KIND_CYCLONEDDS)  //创建实体的句柄（handle）：
   {
-    if ((handle = dds_handle_register_special (&e->m_hdllink, implicit, true, DDS_CYCLONEDDS_HANDLE)) <= 0)
+    if ((handle = dds_handle_register_special (&e->m_hdllink, implicit, true, DDS_CYCLONEDDS_HANDLE)) <= 0)  //使用 dds_handle_register_special 函数注册一个特殊的句柄
       return (dds_entity_t) handle;
   }
   else
   {
     /* for topics, refc counts readers/writers, for all others, it counts children (this we can get away with
        as long as topics can't have children) */
-    if ((handle = dds_handle_create (&e->m_hdllink, implicit, entity_may_have_children (e), user_access)) <= 0)
+    if ((handle = dds_handle_create (&e->m_hdllink, implicit, entity_may_have_children (e), user_access)) <= 0)  //并根据实体类型确定是否允许有子实体创建句柄。
       return (dds_entity_t) handle;
   }
 
@@ -1096,7 +1096,7 @@ dds_return_t dds_get_status_mask (dds_entity_t entity, uint32_t *mask)
     *mask = ddsrt_atomic_ld32 (&e->m_status.m_status_and_mask) >> SAM_ENABLED_SHIFT;
     // don't leak abuse of DATA_ON_READERS in readers' status masks
     if (dds_entity_kind (e) == DDS_KIND_READER)
-      *mask &= ~(uint32_t)DDS_DATA_ON_READERS_STATUS;
+      *mask &= ~(uint32_t)DDS_DATA_ON_READERS_STATUS;       //将给定的 mask（状态掩码）中的 DDS_DATA_ON_READERS_STATUS 位清除。这通常用于在读取器上禁用数据可用的状态。
     ret = DDS_RETCODE_OK;
   }
   dds_entity_unpin(e);
@@ -1211,6 +1211,9 @@ dds_return_t dds_get_domainid (dds_entity_t entity, dds_domainid_t *id)
   if (id == NULL)
     return DDS_RETCODE_BAD_PARAMETER;
 
+  //通过调用 dds_entity_pin，会增加实体的引用计数，防止在函数执行期间实体被意外删除或释放。
+  //这样可以保证在函数内部访问实体成员时，实体对象仍然有效，并且不会被其他操作影响。
+
   if ((rc = dds_entity_pin (entity, &e)) != DDS_RETCODE_OK)
     return rc;
 
@@ -1265,11 +1268,12 @@ dds_return_t dds_get_guid (dds_entity_t entity, dds_guid_t *guid)
   return ret;
 }
 
+//通过给定的实体句柄 hdl 进行引用计数的增加，并将句柄对应的 dds_handle_link 结构体转换为 dds_entity 结构体指针。
 dds_return_t dds_entity_pin_with_origin (dds_entity_t hdl, bool from_user, dds_entity **eptr)
 {
   dds_return_t hres;
   struct dds_handle_link *hdllink;
-  if ((hres = dds_handle_pin_with_origin (hdl, from_user, &hdllink)) < 0)
+  if ((hres = dds_handle_pin_with_origin (hdl, from_user, &hdllink)) < 0)//引用计数增加失败，函数直接返回对应的错误码
     return hres;
   else
   {

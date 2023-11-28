@@ -101,12 +101,14 @@ typedef struct ddsi_adlink_participant_version_info
   char *internals;
 } ddsi_adlink_participant_version_info_t;
 
+//用于存储关于实体的各种属性和配置信息
 typedef struct ddsi_plist {
   uint64_t present;
   uint64_t aliased;
 
   dds_qos_t qos;
 
+  //表示实体的单播和组播的定位器（Locator）信息，用于指定实体的通信地址。
   ddsi_protocol_version_t protocol_version;
   ddsi_vendorid_t vendorid;
   ddsi_locators_t unicast_locators;
@@ -114,9 +116,10 @@ typedef struct ddsi_plist {
   ddsi_locators_t default_unicast_locators;
   ddsi_locators_t default_multicast_locators;
   ddsi_locators_t metatraffic_unicast_locators;
-  ddsi_locators_t metatraffic_multicast_locators;
+  ddsi_locators_t metatraffic_multicast_locators;  //元消息单播和组播的定位器信息，用于元消息的传输。
 
-  unsigned char expects_inline_qos;
+
+  unsigned char expects_inline_qos;  //表示实体是否期望内联的 QoS。
   ddsi_count_t participant_manual_liveliness_count;
   uint32_t participant_builtin_endpoints;
   /* ddsi_content_filter_property_t content_filter_property; */
@@ -150,6 +153,22 @@ typedef struct ddsi_plist {
   unsigned char cyclone_requests_keyhash;
   unsigned char cyclone_redundant_networking;
 } ddsi_plist_t;
+
+/*
+
+builtin_endpoint_set 是 ddsi_plist_t 结构体中的一个字段，表示实体的内置端点集合。内置端点是指实体内部提供的特定功能的端点，用于与其他实体进行通信和交互。
+在 DDS 中，内置端点包括以下几种类型：
+Participant Discovery Endpoint：用于实体的发现和识别。
+Publication Data Writer Endpoint：用于发布数据的数据写入端点。
+Subscription Data Reader Endpoint：用于订阅数据的数据读取端点。
+Publication Data Writer Proxy Endpoint：用于发布数据的代理写入端点。
+Subscription Data Reader Proxy Endpoint：用于订阅数据的代理读取端点。
+Built-in Topic Data Writer Endpoint：用于发布内置主题数据的数据写入端点。
+Built-in Topic Data Reader Endpoint：用于订阅内置主题数据的数据读取端点。
+builtin_endpoint_set 字段使用位标志表示实体具有哪些内置端点。每个位标志对应一个特定类型的内置端点，
+如果该位被设置为 1，则表示实体具有该类型的内置端点；如果被设置为 0，则表示实体不具有该类型的内置端点。通过检查和操作 builtin_endpoint_set 字段的位标志，可以确定实体所支持的内置端点类型。
+
+*/
 
 /**
  * @brief Initialize a ddsi_plist_t as an empty object

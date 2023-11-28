@@ -1385,6 +1385,7 @@ int ddsi_init (struct ddsi_domaingv *gv)
 
   if (gv->m_factory->m_connless)
   {
+    //participantIndex确定如何分配单播端口和参与者索引。参与者索引通常用于标识不同的DDS参与者。
     if (gv->config.participantIndex >= 0 || gv->config.participantIndex == DDSI_PARTICIPANT_INDEX_NONE)
     {
       enum make_uc_sockets_ret musret = make_uc_sockets (gv, &port_disc_uc, &port_data_uc, gv->config.participantIndex);
@@ -1404,6 +1405,7 @@ int ddsi_init (struct ddsi_domaingv *gv)
           goto err_unicast_sockets;
       }
     }
+    //如果 gv->config.participantIndex 等于 DDSI_PARTICIPANT_INDEX_AUTO，则尝试查找一个可用的参与者索引。这是通过循环迭代来实现的，每次迭代都会尝试调用 
     else if (gv->config.participantIndex == DDSI_PARTICIPANT_INDEX_AUTO)
     {
       /* try to find a free one, and update gv->config.participantIndex */
@@ -1467,6 +1469,7 @@ int ddsi_init (struct ddsi_domaingv *gv)
       if (!create_multicast_sockets (gv))
         goto err_mc_conn;
 
+      //则将多播连接作为单播连接。这涉及将数据连接和发现连接的端口设置为多播连接的端口，以及手动为发现连接和默认连接设置定位器（locators）。
       if (gv->config.many_sockets_mode == DDSI_MSM_NO_UNICAST)
       {
         gv->data_conn_uc = gv->data_conn_mc;
@@ -1476,7 +1479,7 @@ int ddsi_init (struct ddsi_domaingv *gv)
         ddsi_conn_locator (gv->data_conn_uc, &gv->loc_default_uc);
       }
 
-      /* Set multicast locators */
+      /* Set multicast locators 设置多播的端口*/
       if (!ddsi_is_unspec_locator(&gv->loc_spdp_mc))
         gv->loc_spdp_mc.port = ddsi_conn_port (gv->disc_conn_mc);
       if (!ddsi_is_unspec_locator(&gv->loc_meta_mc))
@@ -1552,6 +1555,37 @@ int ddsi_init (struct ddsi_domaingv *gv)
   if (ddsi_convert_nwpart_config (gv, port_data_uc) < 0)
     goto err_network_partition_config;
 
+  /*
+  
+  
+这段代码看起来是一段用于初始化和配置网络连接的代码，通常用于分布式系统或通信应用程序。以下是对这段代码的解释：
+
+Join SPDP, default multicast addresses if enabled：
+
+这部分代码首先检查是否启用了组播通信（gv->config.allowMulticast）和是否启用了无连接通信（gv->m_factory->m_connless）。
+如果两者都启用，它会调用 joinleave_spdp_defmcip 函数来加入SPDP（Simple Participant Discovery Protocol）组播通信。SPDP是用于DDS（Data Distribution Service）中发现参与者的协议。
+如果加入SPDP组播失败，它将跳转到 err_mc_conn 标签，可能用于处理连接错误的情况。
+DDS_HAS_NETWORK_CHANNELS：
+
+这部分代码在条件 DDS_HAS_NETWORK_CHANNELS 成立时执行。
+它通过循环迭代 gv->config.channels 中的通道列表元素，为每个通道配置传输连接和事件队列。
+如果通道具有 diffserv_field（差分服务字段），它会为该通道创建一个传输连接，并配置特定的传输质量服务（QoS）。
+否则，它将使用默认的传输连接 gv->data_conn_uc。
+最后，它还创建了事件队列，并设置了相应的参数，以用于后续的事件处理。
+Create event queues：
+
+这部分代码用于创建事件队列。
+它使用先前配置的参数来创建事件队列 gv->xevents，并设置相关的参数，包括最大排队的重传字节数、最大排队的重传消息数和辅助带宽限制。
+DDS_HAS_SECURITY：
+
+如果定义了 DDS_HAS_SECURITY，则会调用 q_omg_security_init 函数，用于初始化与安全性相关的设置。
+地址集合和对等地址：
+
+代码中创建了地址集合 gv->as_disc，用于存储相关的网络地址。
+根据配置，它将发现地址（SPDP组播地址）添加到地址集合中。
+如果启用了组播通信，但组播不可用，代码会将本地接口的地址添加到对等地址集合中。
+最后，如果配置中提供了对等地址（peers），则也会将这些对等地址添加到对等地址集合中。
+  */
   // Join SPDP, default multicast addresses if enabled
   if (gv->m_factory->m_connless && gv->config.allowMulticast)
   {

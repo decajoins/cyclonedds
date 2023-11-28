@@ -53,6 +53,44 @@ struct ddsi_generic_proxy_endpoint {
   struct ddsi_proxy_endpoint_common c;
 };
 
+/**
+
+struct ddsi_proxy_writer：
+
+这个结构体表示DDS中的代理写者，用于处理写入数据的一方。
+该结构体包含了一系列字段，用于管理代理写者的状态、与读者的匹配、交付数据的方式等。
+pwr：
+
+pwr 是指向 struct ddsi_proxy_writer 结构体的指针，用于引用一个具体的代理写者的实例。
+这个结构体的字段包括：
+e 和 c：这两个字段是结构体 ddsi_entity_common 和 ddsi_proxy_endpoint_common 的实例。它们包含了一些通用的实体和代理端点的信息。
+readers：AVL树，用于存储与本地（LOCAL）读者匹配的信息，使用函数 pwr_rd_match 进行匹配。
+n_reliable_readers：可靠性读者的数量。
+n_readers_out_of_sync：需要特殊处理的（例如，接受历史数据或等待历史数据集变为完整的）读者的数量。
+last_seq：由该写者发布的最高已知序列号，而不是最后交付的序列号。
+last_fragnum：last_seq 的最后已知分段（fragment）的分段号，如果 last_seq 不是部分的则为 UINT32_MAX。
+nackfragcount：上次 NACK 的分段序列号。
+next_deliv_seq_lowword：将要交付的下一个序列号的低32位，用于生成ACK。
+deliver_synchronously：如果为1，则非历史数据的交付将直接从接收线程进行；否则通过交付队列 "dqueue" 进行。
+have_seen_heartbeat：如果为1，表示我们至少收到了来自该代理写者的一个心跳。
+local_matching_inprogress：如果为1，表示我们仍在匹配本地读者，以便最初不向某些读者交付数据而不是全部读者。
+alive：如果为1，表示代理写者是活动的（该代理写者的租约没有过期）。
+filtered：如果为1，表示内置代理写者使用内容过滤器，这影响心跳和间隙。
+redundant_networking：如果为1，表示请求在所有广告接口上接收数据。
+supports_ssm：如果为1，表示该代理写者支持SSM（Simple Secure Messaging）。
+alive_vclock：虚拟时钟，计算活动/非活动之间的过渡。
+defrag：用于该代理写者的解碎器。
+reorder：用于该代理写者的消息重新排序。
+dqueue：用于异步交付的交付队列（历史数据总是异步交付）。
+evq：用于ACK生成的定时事件队列。
+rdary：用于快速路径的本地读者。
+lease：租约，用于管理代理写者的生命周期。
+pwr->readers：
+
+pwr->readers 是代理写者所匹配的本地读者（LOCAL readers）的 AVL 树。
+通过 pwr_rd_match 函数进行匹配，以便知道应该将数据交付给哪些读者。
+这样，pwr 和 pwr->readers 结合起来，代表了代理写者的状态以及其与本地读者的匹配情况。
+*/
 struct ddsi_proxy_writer {
   struct ddsi_entity_common e;
   struct ddsi_proxy_endpoint_common c;

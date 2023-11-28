@@ -1020,8 +1020,27 @@ static int inst_accepts_sample_by_writer_guid (const struct rhc_instance *inst, 
   return (inst->wr_iid_islive && inst->wr_iid == wrinfo->iid) || memcmp (&wrinfo->guid, &inst->wr_guid, sizeof (inst->wr_guid)) < 0;
 }
 
+/**
+inst：
+
+这代表实例（instance），是数据读取器（reader）在运行时维护的数据结构，用于跟踪和管理接收到的数据的状态。
+每个实例关联到某个特定的数据写入者（writer）和特定的实例标识（IID）。
+inst 中的属性，如时间戳、强度等，反映了该实例当前的状态。
+sample：
+
+这代表样本数据（sample data），是从数据写入者接收到的一段数据。
+样本中包含了关于数据的信息，比如时间戳、写入者 GUID、数据内容等。
+sample 是被传递给读取器以供处理的数据单元。
+在函数 inst_accepts_sample 中，inst 是数据读取器当前管理的实例，而 sample 是从数据写入者接收到的样本数据。该函数的目的是确定给定的实例是否接受特定的样本数据。
+*/
 static int inst_accepts_sample (const struct dds_rhc_default *rhc, const struct rhc_instance *inst, const struct ddsi_writer_info *wrinfo, const struct ddsi_serdata *sample, const bool has_data)
 {
+  /*
+  源排序检查：
+
+  如果启用了 by_source_ordering，则比较传入样本和现有实例的时间戳。
+  如果时间戳无效或相等，则检查样本的写入者 GUID 是否被实例接受。
+  */
   if (rhc->by_source_ordering) {
     /* source ordering, so compare timestamps*/
     if (sample->timestamp.v == DDS_TIME_INVALID ||
@@ -1038,6 +1057,7 @@ static int inst_accepts_sample (const struct dds_rhc_default *rhc, const struct 
     /* sample is later than inst, further checks may be needed */
   }
 
+  //时间戳分离检查：如果设置了 minimum_separation 并且样本和实例的时间戳都有效，则检查样本的时间戳是否在允许的分离范围内。
   if (rhc->minimum_separation > 0 &&
       sample->timestamp.v != DDS_TIME_INVALID &&
       inst->tstamp.v != DDS_TIME_INVALID) {
@@ -1047,6 +1067,12 @@ static int inst_accepts_sample (const struct dds_rhc_default *rhc, const struct 
     }
   }
 
+  /*
+  独占所有权检查：
+
+  如果启用了 exclusive_ownership 并且实例是活动的（wr_iid_islive）但具有不同的写入者 IID，则比较传入样本的所有权强度与实例的强度。
+  如果传入样本具有更高的所有权强度或具有被接受的写入者 GUID 的相同强度，则接受；否则，拒绝。
+  */
   if (rhc->exclusive_ownership && inst->wr_iid_islive && inst->wr_iid != wrinfo->iid)
   {
     int32_t strength = wrinfo->ownership_strength;
@@ -1060,6 +1086,9 @@ static int inst_accepts_sample (const struct dds_rhc_default *rhc, const struct 
       return 0;
     }
   }
+  //内容过滤检查：如果样本具有数据（has_data 为 true），则检查与读取器关联的内容过滤器（rhc->reader）是否接受给定实例和写入者 IID 的样本。
+  // 如果任何检查失败，函数返回 0（false），表示该实例不接受样本。
+  // 如果所有检查都通过，函数返回 1（true），表示该实例接受样本。
   if (has_data && !content_filter_accepts (rhc->reader, sample, inst, wrinfo->iid, inst->iid))
   {
     return 0;
@@ -1101,6 +1130,7 @@ static void drop_instance_noupdate_no_writers (struct dds_rhc_default *__restric
   *instptr = NULL;
 }
 
+//这里提到的“registrations”是用来追踪写者（数据的发送者）写入哪些实例（数据的实际内容）的。
 static void dds_rhc_register (struct dds_rhc_default *rhc, struct rhc_instance *inst, uint64_t wr_iid, bool autodispose, bool sample_accepted, bool * __restrict nda)
 {
   const uint64_t inst_wr_iid = inst->wr_iid_islive ? inst->wr_iid : 0;
@@ -1567,13 +1597,85 @@ static void update_viewstate_and_disposedness (struct dds_rhc_default * __restri
   delivered (true unless a reliable sample rejected).
 */
 
+/*
+
+这函数是实现数据本地传递的核心部分，处理从 Writer 到 Reader 的数据传递。以下是其主要功能：
+
+锁定 RHC（Reader History Cache）： 获取 RHC 的锁，确保在处理期间不会有其他线程访问 RHC。
+
+查找实例： 根据实例标识符查找 RHC 中的实例。如果实例不存在，则表示这是一个新实例，需要相应处理。
+
+处理新实例： 如果实例是新的，则进行注册，并根据写入的数据更新实例的状态和计数信息。
+
+处理现有实例： 如果实例已经存在，则根据写入的数据更新实例的状态和计数信息。
+
+添加样本： 如果写入包含数据样本，将数据样本添加到实例的历史中。
+
+设置无效样本： 在特定条件下，设置实例的最新样本为无效。
+
+更新实例信息： 根据写入的数据，更新实例的写者标识符和时间戳。
+
+通知数据可用： 如果需要，通知相关的 Reader 数据可用。
+
+通知状态变化： 如果状态发生变化，通知相关的 Reader 状态变化。
+
+解锁 RHC： 释放 RHC 的锁，允许其他线程访问 RHC。
+
+返回存储结果： 返回存储是否成功的标志，用于指示是否需要进行进一步处理。
+
+总体而言，该函数协调了实例的状态变化、数据的添加和通知相关 Reader 进行数据可用和状态变化的处理，确保了正确而高效的数据传递过程。
+*/
+
+/*
+dds_rhc_register 函数
+dds_rhc_register 函数的作用主要是处理实例的注册，该实例是与特定的写者（writer）相关联的。在DDS（Data Distribution Service）中，实例的注册通常发生在数据写入（publish）时。具体功能包括：
+
+创建实例： 如果给定的实例不存在，则创建一个新的实例。
+
+注册写者： 将写者与实例关联起来。这表示实例已经收到了来自该写者的数据。
+
+处理自动释放（Auto-Dispose）： 如果启用了自动释放机制，函数可能会处理实例的自动释放。自动释放是指当写者停止写入数据时，实例会自动释放。
+
+更新统计信息： 在实例注册的过程中，可能需要更新一些统计信息，例如实例的状态（是否为空等）。
+
+get_trigger_info_pre 函数
+get_trigger_info_pre 函数用于获取实例在处理前的触发器信息。在这里，主要是获取实例的写入计数等信息，以备后续处理时使用。函数的主要作用包括：
+
+获取写入计数： 获取实例接收到的写入数量，用于判断实例的状态。
+
+其他触发器信息： 获取其他可能需要在处理前了解的触发器信息。
+
+这些信息在后续处理中可能用于判断实例的状态变化，例如在记录状态变化前后是否有新的写入等。
+*/
 static bool dds_rhc_default_store (struct ddsi_rhc * __restrict rhc_common, const struct ddsi_writer_info * __restrict wrinfo, struct ddsi_serdata * __restrict sample, struct ddsi_tkmap_instance * __restrict tk)
 {
+  //struct dds_rhc_default * const __restrict rhc = (struct dds_rhc_default * __restrict) rhc_common;：将通用的 RHC 转换为特定类型的 RHC，这里是 dds_rhc_default。
   struct dds_rhc_default * const __restrict rhc = (struct dds_rhc_default * __restrict) rhc_common;
+  //获取写者实体的实例标识符。
   const uint64_t wr_iid = wrinfo->iid;
+  //获取样本的状态信息。
   const uint32_t statusinfo = sample->statusinfo;
+  //检查样本是否包含数据。
   const bool has_data = (sample->kind == SDK_DATA);
+  //检查是否是释放（dispose）操作。
   const int is_dispose = (statusinfo & DDSI_STATUSINFO_DISPOSE) != 0;
+  /*
+  struct rhc_instance dummy_instance;：创建一个虚拟的 RHC 实例。
+
+  struct rhc_instance *inst;：用于存储实例的指针。
+
+  struct trigger_info_pre pre;：用于存储处理前的触发器信息。
+
+  struct trigger_info_post post;：用于存储处理后的触发器信息。
+
+  struct trigger_info_qcond trig_qc;：用于存储处理时的触发器信息。
+
+  rhc_store_result_t stored;：用于存储样本存储的结果。
+
+  ddsi_status_cb_data_t cb_data;：用于存储回调函数的相关数据。
+
+  bool notify_data_available;：标志是否需要通知数据可用。
+  */
   struct rhc_instance dummy_instance;
   struct rhc_instance *inst;
   struct trigger_info_pre pre;
@@ -1584,6 +1686,7 @@ static bool dds_rhc_default_store (struct ddsi_rhc * __restrict rhc_common, cons
   bool notify_data_available;
 
   TRACE ("rhc_store %"PRIx64",%"PRIx64" si %"PRIx32" has_data %d:", tk->m_iid, wr_iid, statusinfo, has_data);
+  // /如果样本没有数据且状态信息为0，则表示仅包含键（key），这时忽略该样本。
   if (!has_data && statusinfo == 0)
   {
     /* Write with nothing but a key -- I guess that would be a
@@ -1593,6 +1696,17 @@ static bool dds_rhc_default_store (struct ddsi_rhc * __restrict rhc_common, cons
     return true;
   }
 
+  /*
+  notify_data_available = false;：初始化数据可用通知标志。
+
+  dummy_instance.iid = tk->m_iid;：设置虚拟实例的实例标识符。
+
+  stored = RHC_FILTERED;：初始化存储结果为“被过滤”。
+
+  cb_data.raw_status_id = -1;：初始化回调函数数据的状态标识为-1。
+
+  init_trigger_info_qcond (&trig_qc);：初始化触发器信息。
+  */
   notify_data_available = false;
   dummy_instance.iid = tk->m_iid;
   stored = RHC_FILTERED;
@@ -1602,18 +1716,31 @@ static bool dds_rhc_default_store (struct ddsi_rhc * __restrict rhc_common, cons
 
   ddsrt_mutex_lock (&rhc->lock);
 
+  //查找实例。
   inst = ddsrt_hh_lookup (rhc->instances, &dummy_instance);
+  //如果实例不存在
   if (inst == NULL)
   {
     /* New instance for this reader.  If no data content -- not (also)
        a write -- ignore it, I think we can get away with ignoring dispose or unregisters
        on unknown instances.
      */
+    //if (!has_data && !is_dispose)：如果样本既没有数据也不是释放操作，说明是在未知实例上的取消注册，此时忽略。
     if (!has_data && !is_dispose)
     {
       TRACE (" unreg on unknown instance\n");
       goto error_or_nochange;
     }
+    /*
+    else：否则，说明是新实例。
+
+  - `stored = rhc_store_new_instance (&inst, rhc, wrinfo, sample, tk, has_data, &cb_data, &trig_qc, &notify_data_available);`：
+    尝试将新实例存储到 RHC 中。
+
+  - `if (stored != RHC_STORED)`：如果存储结果不是“存储成功”则跳到错误或无更改的处理。
+
+  - `init_trigger_info_cmn_nonmatch (&pre.c);`：初始化触发器信息。
+    */
     else
     {
       TRACE (" new instance\n");
@@ -1624,6 +1751,8 @@ static bool dds_rhc_default_store (struct ddsi_rhc * __restrict rhc_common, cons
       init_trigger_info_cmn_nonmatch (&pre.c);
     }
   }
+
+  //如果实例拒绝样本。
   else if (!inst_accepts_sample (rhc, inst, wrinfo, sample, has_data))
   {
     /* Rejected samples (and disposes) should still register the writer;
@@ -1634,33 +1763,52 @@ static bool dds_rhc_default_store (struct ddsi_rhc * __restrict rhc_common, cons
     TRACE (" instance rejects sample\n");
 
     get_trigger_info_pre (&pre, inst);
+    //如果有数据或是释放操作
     if (has_data || is_dispose)
-    {
+    {//尝试注册实例。
       dds_rhc_register (rhc, inst, wr_iid, wrinfo->auto_dispose, false, &notify_data_available);
+      //如果需要通知数据可用。
       if (notify_data_available)
       {
+        //如果实例没有最新的数据或最新的数据被读取。
         if (inst->latest == NULL || inst->latest->isread)
         {
+          //记录实例在处理前是否为空。
           const bool was_empty = inst_is_empty (inst);
+          //设置一个无效样本。
           inst_set_invsample (rhc, inst, &trig_qc, &notify_data_available);
+          //如果实例在处理前是空的。
           if (was_empty)
+          //更新统计信息。
             account_for_empty_to_nonempty_transition (rhc, inst);
         }
       }
     }
 
+  /*
+  - `cb_data.raw_status_id = (int) DDS_SAMPLE_LOST_STATUS_ID;`：设置状态标识为样本丢失。
+
+  - `cb_data.extra = 0;`：设置额外数据为0。
+
+  - `cb_data.handle = 0;`：设置句柄为0。
+
+  - `cb_data.add = true;`：设置为添加状态。
+  */
     /* notify sample lost */
     cb_data.raw_status_id = (int) DDS_SAMPLE_LOST_STATUS_ID;
     cb_data.extra = 0;
     cb_data.handle = 0;
     cb_data.add = true;
   }
+  //否则，说明实例接受样本。
   else
   {
+    //获取处理前的触发器信息。
     get_trigger_info_pre (&pre, inst);
 
     TRACE (" wc %"PRIu32, inst->wrcount);
 
+    //如果有数据或是释放操作。
     if (has_data || is_dispose)
     {
       /* View state must be NEW following receipt of a sample when
@@ -1681,31 +1829,42 @@ static bool dds_rhc_default_store (struct ddsi_rhc * __restrict rhc_common, cons
          (i.e., out-of-memory), abort the operation and hope that the
          caller can still notify the application.  */
 
+      //尝试注册实例。(  //对于不带键的主题，认为只有一个实例，但如果有多个写者写入相同主题，则每个写者都会有一个“registration”。)
       dds_rhc_register (rhc, inst, wr_iid, wrinfo->auto_dispose, true, &notify_data_available);
+      //更新实例的视图状态和释放状态。
       update_viewstate_and_disposedness (rhc, inst, has_data, not_alive, is_dispose, &notify_data_available);
 
       /* Only need to add a sample to the history if the input actually is a sample. */
+      //如果有数据
       if (has_data)
       {
         TRACE (" add_sample");
+        //如果添加样本失败。
         if (!add_sample (rhc, inst, wrinfo, sample, &cb_data, &trig_qc, &notify_data_available))
         {
+          //设置存储结果为“拒绝”。
           TRACE ("(reject)\n");
           stored = RHC_REJECTED;
 
           /* FIXME: fix the bad rejection handling, probably put back in a proper rollback, until then a band-aid like this will have to do: */
+          //还原为原始状态。
           inst->isnew = old_isnew;
+          //如果原始状态为释放。
           if (old_isdisposed)
+          //减少释放的计数。
             inst->disposed_gen--;
+            //：还原释放状态。
           inst->isdisposed = old_isdisposed;
           goto error_or_nochange;
         }
       }
 
       /* If instance became disposed, add an invalid sample if there are no samples left */
+      //如果实例变为释放状态，并且没有最新数据或最新数据已被读取。
       if ((bool) inst->isdisposed > old_isdisposed && (inst->latest == NULL || inst->latest->isread))
+      //设置一个无效样本。
         inst_set_invsample (rhc, inst, &trig_qc, &notify_data_available);
-
+      //更新实例的写者实体标识符和时间戳
       update_inst_have_wr_iid (inst, wrinfo, sample->timestamp);
 
       /* Can only add samples => only need to give special treatment
@@ -1713,16 +1872,21 @@ static bool dds_rhc_default_store (struct ddsi_rhc * __restrict rhc_common, cons
          guaranteed that we end up with a non-empty instance: for
          example, if the instance was disposed & empty, nothing
          changes. */
+         //如果实例有最新数据或实例变为释放状态。
       if (inst->latest || (bool) inst->isdisposed > old_isdisposed)
       {
+        //如果实例在处理前是空的。
         if (was_empty)
+        //更新统计信息
           account_for_empty_to_nonempty_transition (rhc, inst);
         else
           rhc->n_not_alive_disposed += (uint32_t)(inst->isdisposed - old_isdisposed);
         rhc->n_new += (uint32_t)(inst->isnew - old_isnew);
       }
+      //          //否则，说明实例没有最新数据或没有变为释放状态
       else
       {
+        //确保实例是否为空与处理前是否为空相匹配。
         assert (inst_is_empty (inst) == was_empty);
       }
     }
@@ -1731,6 +1895,7 @@ static bool dds_rhc_default_store (struct ddsi_rhc * __restrict rhc_common, cons
     assert (rhc_check_counts_locked (rhc, false, false));
   }
 
+  //如果状态信息包含取消注册标志
   if (statusinfo & DDSI_STATUSINFO_UNREGISTER)
   {
     /* Either a pure unregister, or the instance rejected the sample
@@ -1746,13 +1911,17 @@ static bool dds_rhc_default_store (struct ddsi_rhc * __restrict rhc_common, cons
        mean an application reading "x" after the write and reading it
        again after the unregister will see a change in the
        no_writers_generation field? */
+       //尝试取消注册实例
     dds_rhc_unregister (rhc, inst, wrinfo, sample->timestamp, &post, &trig_qc, &notify_data_available);
   }
+  //否则，说明不是取消注册
   else
   {
+    //获取处理后的触发器信息。
     get_trigger_info_cmn (&post.c, inst);
   }
 
+  //处理实例更新。
   postprocess_instance_update (rhc, &inst, &pre, &post, &trig_qc);
 
 error_or_nochange:

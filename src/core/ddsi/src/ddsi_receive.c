@@ -2161,6 +2161,7 @@ static dds_return_t remote_on_delivery_failure_fastpath (struct ddsi_entity_comm
   return DDS_RETCODE_TRY_AGAIN;
 }
 
+//接收到的数据传递到本地，涉及到了一系列的数据结构和处理操作
 static int deliver_user_data (const struct ddsi_rsample_info *sampleinfo, const struct ddsi_rdata *fragchain, const ddsi_guid_t *rdguid, int pwr_locked)
 {
   static const struct ddsi_deliver_locally_ops deliver_locally_ops = {
@@ -2188,6 +2189,7 @@ static int deliver_user_data (const struct ddsi_rsample_info *sampleinfo, const 
      DataFrag header, so for the fixed-position things that we're
      interested in here, both can be treated as Data submessages. */
   msg = (ddsi_rtps_data_datafrag_common_t *) DDSI_RMSG_PAYLOADOFF (fragchain->rmsg, DDSI_RDATA_SUBMSG_OFF (fragchain));
+  //通过规范化数据子消息的标志获取数据子消息头标志。
   data_smhdr_flags = ddsi_normalize_data_datafrag_flags (&msg->smhdr);
 
   /* Extract QoS's to the extent necessary.  The expected case has all
@@ -2202,7 +2204,10 @@ static int deliver_user_data (const struct ddsi_rsample_info *sampleinfo, const 
      Complex qos bit also gets set when statusinfo bits other than
      dispose/unregister are set.  They are not currently defined, but
      this may save us if they do get defined one day.  */
+     //确定是否需要关键散列。？？？
   need_keyhash = (sampleinfo->size == 0 || (data_smhdr_flags & (DDSI_DATA_FLAG_KEYFLAG | DDSI_DATA_FLAG_DATAFLAG)) == 0);
+  //如果条件 (sampleinfo->complex_qos || need_keyhash) || !(data_smhdr_flags & DDSI_DATA_FLAG_INLINE_QOS) 不成立，
+  //表示服务质量参数已经在样本信息中预解码，直接使用；否则，需要从内联服务质量参数中提取。
   if (!(sampleinfo->complex_qos || need_keyhash) || !(data_smhdr_flags & DDSI_DATA_FLAG_INLINE_QOS))
   {
     ddsi_plist_init_empty (&qos);
@@ -2232,8 +2237,10 @@ static int deliver_user_data (const struct ddsi_rsample_info *sampleinfo, const 
   /* FIXME: should it be 0, local wall clock time or INVALID? */
   const ddsrt_wctime_t tstamp = (sampleinfo->timestamp.v != DDSRT_WCTIME_INVALID.v) ? sampleinfo->timestamp : ((ddsrt_wctime_t) {0});
   struct ddsi_writer_info wrinfo;
+  //定义写入器信息。
   ddsi_make_writer_info (&wrinfo, &pwr->e, pwr->c.xqos, statusinfo);
 
+  //定义远程源信息，用于传递给 ddsi_deliver_locally_one 或 ddsi_deliver_locally_allinsync。
   struct remote_sourceinfo sourceinfo = {
     .sampleinfo = sampleinfo,
     .data_smhdr_flags = data_smhdr_flags,
@@ -2261,6 +2268,19 @@ int ddsi_user_dqueue_handler (const struct ddsi_rsample_info *sampleinfo, const 
   return res;
 }
 
+/*
+while (sc->first)：循环开始，只要 sc 中仍有待传递的样本链元素（first 不为空），就会一直执行。
+
+struct ddsi_rsample_chain_elem *e = sc->first;：将链表中的第一个元素赋值给 e，然后将 sc 的 first 指向下一个元素，以准备下一次循环。
+
+if (e->sampleinfo != NULL)：检查样本信息是否存在。这是为了确保不尝试传递一个缺失的样本（gap）。注释中提到这可能与 sample_lost 事件有关。
+
+deliver_user_data(e->sampleinfo, e->fragchain, rdguid, 1);：调用 deliver_user_data 函数，传递样本信息、碎片链和读者的GUID。第四个参数为1，可能表示同步传递。
+
+ddsi_fragchain_unref(e->fragchain);：将 e 中的碎片链的引用计数减一。这是为了确保释放碎片链的资源。
+
+循环继续，处理下一个样本链元素。
+*/
 static void deliver_user_data_synchronously (struct ddsi_rsample_chain *sc, const ddsi_guid_t *rdguid)
 {
   while (sc->first)
@@ -2298,6 +2318,51 @@ static void clean_defrag (struct ddsi_proxy_writer *pwr)
   ddsi_defrag_notegap (pwr->defrag, 1, seq);
 }
 
+/**
+ * 
+ * 
+获取目标 GUID 和代理写入器信息：
+
+dst 保存了数据的目标 GUID 信息。
+pwr 是代理写入器信息，其中包含了关于写入器的各种状态信息。
+更新租约信息：
+
+通过 ddsi_lease_renew 函数更新代理写入器相关的租约信息。
+检查代理写入器的活跃状态：
+
+如果代理写入器之前处于非活跃状态，通过 ddsi_proxy_writer_set_alive_may_unlock 函数设置为活跃状态。
+检查可靠读取器的存在：
+
+如果存在可靠读取器且尚未收到心跳消息，则中断处理，等待心跳消息。
+检查读取器的存在：
+
+如果没有读取器或者正在进行本地匹配，中断处理。
+跟踪最高的序列号和片段号：
+
+更新代理写入器的 last_seq 和 last_fragnum，以跟踪最高的序列号和片段号。
+清理碎片数据：
+
+调用 clean_defrag 函数清理碎片数据。
+创建 ddsi_rsample 结构：
+
+通过 ddsi_defrag_rsample 函数创建一个 ddsi_rsample 结构表示接收到的数据。
+处理过滤的读取器：
+
+如果存在过滤的读取器，尝试将数据发送给这些读取器。
+处理正常的数据传输：
+
+调用 ddsi_reorder_rsample 函数处理正常的数据传输，获取 ddsi_rsample_chain 结构。
+如果成功，根据处理方式选择同步或异步传输，然后将数据加入到消息队列中。
+处理读取器的同步状态：
+
+对于处于同步状态但不在同步的读取器，重新处理接收到的数据。
+解锁代理写入器：
+
+解锁代理写入器，释放锁资源。
+等待消息队列为空：
+
+等待消息队列为空，以确保数据正确传输。
+*/
 static void handle_regular (struct ddsi_receiver_state *rst, ddsrt_etime_t tnow, struct ddsi_rmsg *rmsg, const ddsi_rtps_data_datafrag_common_t *msg, const struct ddsi_rsample_info *sampleinfo,
     uint32_t max_fragnum_in_msg, struct ddsi_rdata *rdata, struct ddsi_dqueue **deferred_wakeup, bool renew_manbypp_lease)
 {
@@ -2369,6 +2434,23 @@ static void handle_regular (struct ddsi_receiver_state *rst, ddsrt_etime_t tnow,
   /* Track highest sequence number we know of -- we track both
      sequence number & fragment number so that the NACK generation can
      do the Right Thing. */
+     /**
+      * 
+      * 
+      * 检查读者是否存在：
+
+      如果代理写入器（pwr）的读者列表为空或者本地匹配正在进行中，就会释放代理写入器的锁，输出相应的调试日志，然后函数返回。这是因为如果没有读者，就没有必要继续处理数据。
+      跟踪最高的序列号和分片号：
+
+      如果有读者存在，就会继续执行后续操作。
+      检查传入的数据的序列号（sampleinfo->seq）是否大于代理写入器已知的最高序列号（pwr->last_seq）。
+      如果是，更新代理写入器的最高序列号和最高分片号。
+      如果序列号相等，检查传入的数据的最大分片号（max_fragnum_in_msg）是否大于代理写入器已知的最高分片号（pwr->last_fragnum）。
+      如果是，更新代理写入器的最高分片号。
+      清理碎片缓存：
+
+      调用 clean_defrag 函数，该函数用于清理代理写入器的碎片缓存。这可能涉及将不再需要的碎片从缓存中移除，以释放资源或确保缓存不会无限增长。
+     */
   if (sampleinfo->seq > pwr->last_seq)
   {
     pwr->last_seq = sampleinfo->seq;
@@ -2381,6 +2463,47 @@ static void handle_regular (struct ddsi_receiver_state *rst, ddsrt_etime_t tnow,
 
   clean_defrag (pwr);
 
+  /**
+   * 
+      在分布式系统中，数据的传输可能经历多个网络节点，由于网络的不确定性，数据包的到达顺序可能与其发送顺序不一致。此外，数据可能被分割成多个片段进行传输，这使得在接收端需要对这些片段进行重组。因此，为了确保接收端得到正确有序的完整数据，就需要对接收到的数据进行重新组装和排序。
+
+      具体原因包括：
+
+      网络不确定性： 数据包在网络中的传输可能会受到各种因素的影响，例如网络拥塞、延迟、丢包等。这可能导致数据包以不同的顺序到达接收端。
+
+      分割和重组： 数据为了在网络上传输可能会被分割成多个片段，这些片段需要在接收端进行重组，以还原原始数据。
+
+      保证有序性： 在分布式系统中，有时数据的有序性对于正确的应用行为非常重要。例如，对于实时应用或者需要按时间戳顺序处理的数据，确保数据的有序性是必要的。
+
+      处理不同速率的生产者和消费者： 在发布-订阅系统中，生产者和消费者可能以不同的速率工作。为了适应这种差异，数据可能会在代理层进行排序，以确保按正确的顺序传递给消费者。
+
+      在上述代码中，ddsi_defrag_rsample 和 ddsi_reorder_rsample 就是用来处理这些情况的函数。前者负责重组数据，后者负责对数据进行排序。通过这些操作，可以在分布式环境中保证正确的数据传输和有序性。
+   * 
+
+
+      调用 ddsi_defrag_rsample 函数：
+
+      该函数用于将接收到的数据碎片重新组装成完整的数据样本（rsample）。
+      如果成功组装，会继续执行后续操作。
+      检查是否需要过滤：
+
+      如果代理写入器开启了数据过滤（pwr->filtered为真）且目标 GUID（dst）非空，则遍历代理写入器的读者列表，查找与目标 GUID 匹配的读者。
+      如果找到匹配的读者，检查该读者是否开启了过滤（wn->filtered为真）。
+      如果需要过滤，调用 ddsi_reorder_rsample 函数对数据进行重排序，并根据情况将数据加入发送队列或同步地交付给读者。
+      处理未被过滤的数据：
+
+      如果数据不需要被过滤，再次调用 ddsi_reorder_rsample 函数进行重排序。
+      如果重排序成功，根据代理写入器的配置和状态进行不同的处理：
+      如果代理写入器没有可靠的读者（pwr->n_reliable_readers == 0），但是重排序缓冲接受了样本，说明这是一个具有非可靠读者的可靠代理写入器。
+      插入一个 Gap（[1, sampleinfo->seq)）以强制传递此样本，并确保不会将 Gap 添加到重排序管理中。
+      否则，如果数据样本满足条件，将其加入发送队列或同步地交付给读者。
+      处理与代理写入器不同步的读者：
+
+      如果代理写入器有读者不同步（pwr->n_readers_out_of_sync > 0），遍历读者列表：
+      对于处于不同步状态的读者，使用 ddsi_reorder_rsample 函数对数据进行重排序。
+      根据情况将数据加入发送队列或同步地交付给读者。
+      如果数据被标记为太旧或被拒绝，则执行相应的处理。
+  */
   if ((rsample = ddsi_defrag_rsample (pwr->defrag, rdata, sampleinfo)) != NULL)
   {
     int refc_adjust = 0;
@@ -2390,6 +2513,39 @@ static void handle_regular (struct ddsi_receiver_state *rst, ddsrt_etime_t tnow,
     struct ddsi_pwr_rd_match *wn;
     int filtered = 0;
 
+    /**
+背景：
+      pwr 代表数据写者（writer）的信息结构。
+      这段代码处理写者接收到的数据样本（rsample）。
+      处理逻辑：
+
+      if (pwr->filtered && !ddsi_is_null_guid(&dst))：这个条件判断是否开启了过滤，并且目标数据读者的 GUID 不为空。
+      for (wn = ddsrt_avl_find_min(&ddsi_pwr_readers_treedef, &pwr->readers); wn != NULL; wn = ddsrt_avl_find_succ(&ddsi_pwr_readers_treedef, &pwr->readers, wn))：遍历写者的已知数据读者。
+      if (ddsi_guid_eq(&wn->rd_guid, &dst))：找到目标数据读者。
+      if (wn->filtered)：目标数据读者开启了过滤。
+      rres2 = ddsi_reorder_rsample(&sc, wn->u.not_in_sync.reorder, rsample, &refc_adjust, ddsi_dqueue_is_full(pwr->dqueue));：对接收到的数据样本进行重新排序，如果需要。
+      if (sampleinfo->seq > wn->last_seq)：检查数据序列号是否大于上次接收到的序列号。
+      wn->last_seq = sampleinfo->seq;：更新数据读者的最后接收到的序列号。
+      数据满足条件时：
+      if (rres2 > 0)：检查重新排序是否成功。
+      if (!pwr->deliver_synchronously)：如果写者不是同步交付模式。
+      ddsi_dqueue_enqueue1(pwr->dqueue, &wn->rd_guid, &sc, rres2);：将数据加入写者的待处理队列。
+      else：如果是同步交付模式。
+      deliver_user_data_synchronously(&sc, &wn->rd_guid);：同步地将用户数据交付给数据读者。
+      filtered = 1;：标记已经进行了过滤。
+      这段代码的核心是在写者收到数据后，检查目标数据读者是否开启了过滤，如果是，则根据序列号和重新排序的情况进行处理。
+    */
+
+   /*
+   
+    在DDS（Data Distribution Service）中，数据过滤是指根据一些条件或规则，选择性地传输或接收数据。这些条件可以基于数据的内容、属性或其他元数据。过滤通常由数据写入者（Publisher）或数据读取者（Subscriber）指定。
+
+    在你提到的上下文中，如果数据不需要被过滤，即所有产生的数据都应该被传输，就会调用 ddsi_reorder_rsample 函数进行重排序。数据的重排序可能涉及到根据序列号（sequence number）或其他标识对数据进行重新排序，以确保按照产生的顺序传输给接收方。
+
+    如果数据需要被过滤，可能会按照一定的规则，比如只传输满足某些条件的数据，或者只接收满足某些条件的数据。过滤可以帮助系统更有效地使用网络带宽，只传输和接收那些对应用程序有意义的数据。
+
+    所以，在这个上下文中，数据过滤就是决定哪些数据应该被传输或接收，而不是对所有的数据都执行传输或接收操作。
+   */
     if (pwr->filtered && !ddsi_is_null_guid(&dst))
     {
       for (wn = ddsrt_avl_find_min (&ddsi_pwr_readers_treedef, &pwr->readers); wn != NULL; wn = ddsrt_avl_find_succ (&ddsi_pwr_readers_treedef, &pwr->readers, wn))
@@ -2421,6 +2577,18 @@ static void handle_regular (struct ddsi_receiver_state *rst, ddsrt_etime_t tnow,
     {
       rres = ddsi_reorder_rsample (&sc, pwr->reorder, rsample, &refc_adjust, 0); // ddsi_dqueue_is_full (pwr->dqueue));
 
+      /*
+      rres = ddsi_reorder_rsample(&sc, pwr->reorder, rsample, &refc_adjust, 0);：这行代码尝试将接收到的数据按照序列号重新排序，以确保按正确的顺序传递给相应的消费者。rres 会包含一个值，指示重新排序的结果。
+
+      if (rres == DDSI_REORDER_ACCEPT && pwr->n_reliable_readers == 0)：如果重新排序被接受，并且写者（数据生产者）没有可靠的读者，就会插入一个 Gap（缺失的数据序列号范围），以便确保只有不可靠的读者存在。这是为了确保即使没有可靠的读者，也能够正确传递数据。
+      （即使没有可靠的读者，也要确保数据序列号的连续性。在 DDS 中，序列号的连续性对于数据的正确传递很重要。
+        这个 Gap 的插入可以避免数据序列号的间隙，即便没有可靠的读者，也能够保持数据传递的有序性。）
+      if (rres > 0)：如果重新排序或插入 Gap 操作成功，表示数据准备好被传递。根据写者的配置，可能有两种方式：
+
+      pwr->deliver_synchronously 为真时，表示同步传递，数据会直接从接收线程传递给消费者。
+      否则，采用异步传递，数据将会被放入传递队列 pwr->dqueue 中等待后续处理。
+      这段代码的目标是确保接收到的数据被按照正确的顺序传递给相应的消费者，并根据写者和读者的配置进行适当的处理。
+      */
       if (rres == DDSI_REORDER_ACCEPT && pwr->n_reliable_readers == 0)
       {
         /* If no reliable readers but the reorder buffer accepted the
@@ -2447,6 +2615,16 @@ static void handle_regular (struct ddsi_receiver_state *rst, ddsrt_etime_t tnow,
         {
           /* FIXME: just in case the synchronous delivery runs into a delay caused
              by the current mishandling of resource limits */
+        //如果存在延迟唤醒的队列（*deferred_wakeup 不为空），则将触发延迟唤醒。
+        //              延迟唤醒（Deferred Wakeup）通常是一种性能优化策略，旨在减少系统中不必要的唤醒操作，特别是在多线程环境中。唤醒操作涉及将线程从等待状态转变为可执行状态，这在涉及多线程同步的系统中可能会导致性能开销。
+
+        // 在上下文中，延迟唤醒可能是为了合并多个唤醒事件，从而减少线程唤醒的频率，提高系统效率。在异步传递数据的情况下，将数据添加到队列而不立即唤醒等待的线程可以在某些情况下提供更好的性能。一些原因包括：
+
+        // 减少上下文切换次数： 每次唤醒一个线程都可能导致上下文切换，而上下文切换是有一定开销的。通过延迟唤醒，系统可以尝试合并多个唤醒事件，从而减少上下文切换的次数。
+
+        // 提高线程局部性： 当线程被唤醒时，它可能需要处理队列中的多个任务。通过延迟唤醒，可以更有效地利用线程的本地性，即在同一时间段内处理多个相关的任务。
+
+        // 减少资源争用： 如果多个线程竞争相同的资源，频繁的唤醒可能导致不必要的争用。通过延迟唤醒，可以减少这种资源争用。
           if (*deferred_wakeup)
             ddsi_dqueue_enqueue_trigger (*deferred_wakeup);
           deliver_user_data_synchronously (&sc, NULL);
@@ -2462,6 +2640,29 @@ static void handle_regular (struct ddsi_receiver_state *rst, ddsrt_etime_t tnow,
         }
       }
 
+
+      /**
+       * 
+       * 
+       * 
+      pwr->n_readers_out_of_sync > 0 表达式检查的是代理写者（proxy writer）的属性 n_readers_out_of_sync 是否大于零。
+      这个属性是一个计数器，表示与该代理写者相关的读者中，有多少个读者是处于不同步状态的。
+      在这个上下文中，“不同步”通常指的是这些读者还没有收到或者处理完所有历史数据，或者处于某种特殊的等待状态。
+
+      因此，当 pwr->n_readers_out_of_sync > 0 为真时，表示代理写者当前有一些相关的读者处于不同步状态。这可能会影响代理写者的行为，例如需要特殊处理这些读者的数据传输，以确保它们能够适应当前的同步状态。
+
+
+      在数据通信的上下文中，“不同步”通常指的是数据生产者和数据消费者之间的状态不一致或者不同步。具体来说，对于实时数据通信系统，这可能涉及到以下几个方面：
+
+      历史数据同步： 数据生产者可能有一些历史数据，而数据消费者可能尚未收到或者处理这些历史数据。在某些情况下，系统需要确保消费者能够追溯并处理历史数据。
+
+      实时数据同步： 即使历史数据同步完成，仍然需要确保实时产生的数据在所有相关的消费者之间同步。如果某个消费者的处理速度较慢，可能会导致不同步状态。
+
+      等待特定条件： 有时，消费者可能会在等待满足特定条件的数据。在等待期间，它可能被认为是不同步的，因为它尚未开始或者不能处理数据。
+
+      在你的上下文中，pwr->n_readers_out_of_sync 表示有多少个相关的读者（数据消费者）处于不同步状态。这可能需要特殊处理，以确保这些读者能够适应当前的同步状态。可能涉及的操作包括等待这些读者完成历史数据的处理或者以某种方式处理它们的特殊状态。
+      */
+     //TODO_ZT
       if (pwr->n_readers_out_of_sync > 0)
       {
         /* Those readers catching up with TL but in sync with the proxy
@@ -2595,6 +2796,38 @@ static void drop_oversize (struct ddsi_receiver_state *rst, struct ddsi_rmsg *rm
   }
 }
 
+/*
+RSTTRACE ("DATA("PGUIDFMT" -> "PGUIDFMT" #%"PRIu64, ...)：在日志中记录处理的数据信息，包括源 GUID、目标 GUID 以及数据的序列号。
+
+if (!rst->forme)：如果数据不是为当前实例（receiver state）而接收的，则返回 1 表示处理完成，不执行后续步骤。
+
+if (sampleinfo->pwr)：如果存在代理写入器信息，使用安全性验证函数 ddsi_security_validate_msg_decoding 进行消息解码验证。如果验证失败，记录日志并返回 1。
+
+if (sampleinfo->size > rst->gv->config.max_sample_size)：如果数据样本大小超过配置的最大样本大小，调用 drop_oversize 处理超大的数据。
+
+else：处理正常大小的数据。
+
+a. 计算数据偏移量，即数据在消息中的位置。
+
+b. 如果存在 datap（数据指针），计算数据有效负载的偏移量；否则，使用整个数据子消息的大小计算。
+
+c. 如果存在 keyhash，计算关键哈希的偏移量；否则，偏移量为 0。
+
+rdata = ddsi_rdata_new (rmsg, 0, sampleinfo->size, submsg_offset, payload_offset, keyhash_offset);：创建 ddsi_rdata 结构表示数据，并传递相应的偏移量和大小信息。
+
+根据写入器 ID 的值执行不同的处理逻辑：
+
+a. 对于 SPDP 内置写入器或 P2P 内置写入器，执行特殊处理，例如 handle_SPDP。
+
+b. 对于其他写入器，执行一般的数据处理逻辑，包括更新租约信息等。
+
+RSTTRACE (")");：在日志中记录处理完成。
+
+返回 1 表示处理完成。
+
+这个函数主要负责接收到的数据的处理，包括验证、大小检查、关键哈希计算等，并根据写入器 ID 执行相应的处理逻辑。
+
+*/
 static int handle_Data (struct ddsi_receiver_state *rst, ddsrt_etime_t tnow, struct ddsi_rmsg *rmsg, const ddsi_rtps_data_t *msg, size_t size, struct ddsi_rsample_info *sampleinfo, const ddsi_keyhash_t *keyhash, unsigned char *datap, struct ddsi_dqueue **deferred_wakeup, ddsi_rtps_submessage_kind_t prev_smid)
 {
   RSTTRACE ("DATA("PGUIDFMT" -> "PGUIDFMT" #%"PRIu64,
@@ -2915,6 +3148,38 @@ static struct ddsi_receiver_state *rst_cow_if_needed (int *rst_live, struct ddsi
   }
 }
 
+/*
+struct ddsi_receiver_state *rst;：定义接收器状态结构体rst。
+
+int rst_live, ts_for_latmeas;：定义一些辅助变量，用于追踪接收器状态的生存状态和时间戳。
+
+ddsi_rtps_submessage_t * const sm = (ddsi_rtps_submessage_t *) submsg;：将当前消息的子消息强制转换为ddsi_rtps_submessage_t类型。
+
+bool byteswap;：标志是否需要进行字节顺序交换。
+
+if (byteswap) sm->smhdr.octetsToNextHeader = ddsrt_bswap2u(sm->smhdr.octetsToNextHeader);：如果需要字节交换，则对octetsToNextHeader字段进行交换。
+
+const uint32_t octetsToNextHeader = sm->smhdr.octetsToNextHeader;：获取子消息的下一个消息头之前的字节数。
+
+if (octetsToNextHeader != 0) { ... } else if (sm->smhdr.submessageId == DDSI_RTPS_SMID_PAD || sm->smhdr.submessageId == DDSI_RTPS_SMID_INFO_TS) { ... } else { ... }：处理不同情况下的子消息大小，考虑了DDS标准中规定的消息对齐和特殊情况。
+
+submsg_size = DDSI_RTPS_SUBMESSAGE_HEADER_SIZE + octetsToNextHeader;：计算子消息的大小。
+
+if (!((octetsToNextHeader % 4) == 0 || submsg_size == (size_t) (end - submsg))) { vr = VR_MALFORMED; break; }：如果字节数不是4的倍数且不是消息的最后一部分，则认为消息格式错误。
+
+if (submsg_size > (size_t) (end - submsg)) { break; }：如果计算的子消息大小超过了消息的实际大小，则跳出循环。
+
+ddsi_thread_state_awake_to_awake_no_nest(thrst);：将线程从休眠状态唤醒。
+
+switch (sm->smhdr.submessageId) { case DDSI_RTPS_SMID_ACKNACK: ... }：根据子消息的ID执行不同的处理。在这里，处理了DDSI_RTPS_SMID_ACKNACK类型的子消息。
+
+if ((vr = validate_AckNack(rst, &sm->acknack, submsg_size, byteswap)) == VR_ACCEPT)：调用validate_AckNack函数验证AckNack消息。
+
+handle_AckNack(rst, tnowE, &sm->acknack, ts_for_latmeas ? timestamp : DDSRT_WCTIME_INVALID, prev_smid, &defer_hb_state);：处理AckNack消息。
+
+ts_for_latmeas = 0;：重置用于延迟心跳测量的时间戳。
+
+*/
 static int handle_submsg_sequence
 (
   struct ddsi_thread_state * const thrst,
@@ -2976,6 +3241,33 @@ static int handle_submsg_sequence
   enum validation_result vr = (len >= sizeof (ddsi_rtps_submessage_header_t)) ? VR_NOT_UNDERSTOOD : VR_MALFORMED;
   while (vr != VR_MALFORMED && submsg <= (end - sizeof (ddsi_rtps_submessage_header_t)))
   {
+
+    /**
+     * 字节序判断：
+      如果子消息头部的 flags 字段中包含 SMFLAG_ENDIANNESS，则表示该消息需要进行字节序（大小端）的调整。
+      根据字节序的要求，判断是否需要进行字节交换，如果需要，则对 octetsToNextHeader 字段进行交换。
+      计算子消息的大小：
+
+      获取 octetsToNextHeader 字段的值，该字段表示从当前子消息的末尾到下一个子消息头之间的字节数。
+      根据规范，子消息需要按照 32 位边界对齐，因此检查 octetsToNextHeader 是否是 4 的倍数。如果不是，标记消息为 VR_MALFORMED。
+      如果 octetsToNextHeader 不为零，计算整个子消息的大小，包括子消息头。
+      如果 octetsToNextHeader 为零，且子消息类型是 SMID_PAD 或 SMID_INFO_TS，则子消息大小为子消息头大小。
+      如果 octetsToNextHeader 为零，且子消息类型不是 SMID_PAD 或 SMID_INFO_TS，则子消息大小为剩余消息的长度。
+      检查消息边界：
+
+      检查计算得到的子消息大小是否越过了消息的边界。如果越界，可能表示消息格式不正确。
+
+
+      如果 octetsToNextHeader 不为零：
+
+      表示存在有效的数据需要被读取，因此需要计算整个子消息的大小，包括子消息头。这是因为 octetsToNextHeader 表示了从当前子消息的末尾到下一个子消息头之间的字节数。
+      如果 octetsToNextHeader 为零，且子消息类型是 SMID_PAD 或 SMID_INFO_TS：
+
+      对于一些特殊类型的子消息，如填充消息 (SMID_PAD) 或信息时间戳消息 (SMID_INFO_TS)，它们没有有效负载数据，因此不需要读取额外的字节。子消息头本身的大小就是整个子消息的大小。
+      如果 octetsToNextHeader 为零，且子消息类型不是 SMID_PAD 或 SMID_INFO_TS：
+
+      对于其他类型的子消息，如果 octetsToNextHeader 为零，表示该子消息之后没有有效数据，因此整个子消息的大小就是剩余消息的长度。
+    */
     ddsi_rtps_submessage_t * const sm = (ddsi_rtps_submessage_t *) submsg;
     bool byteswap;
 
@@ -3190,6 +3482,29 @@ static int handle_submsg_sequence
   }
 }
 
+/*
+
+static void handle_rtps_message (...): 这是一个静态函数handle_rtps_message，用于处理接收到的RTPS消息。
+
+ddsi_rtps_header_t *hdr = (ddsi_rtps_header_t *) msg;: 将接收到的消息内容强制转换为ddsi_rtps_header_t类型的指针，以便读取RTPS消息的头部信息。
+
+assert (ddsi_thread_is_asleep ());: 使用断言确保当前线程处于休眠状态，以防止并发处理消息。
+
+if (sz < DDSI_RTPS_MESSAGE_HEADER_SIZE || *(uint32_t *)msg != DDSI_PROTOCOLID_AS_UINT32): 检查消息的大小是否足够包含RTPS消息头部信息，并且检查消息是否包含正确的魔术Cookie（Magic Cookie）。
+
+else if (hdr->version.major != DDSI_RTPS_MAJOR || (hdr->version.major == DDSI_RTPS_MAJOR && hdr->version.minor < DDSI_RTPS_MINOR_MINIMUM)): 检查RTPS消息的版本号是否与当前实现兼容。
+
+hdr->guid_prefix = ddsi_ntoh_guid_prefix (hdr->guid_prefix);: 将RTPS消息头部中的GUID前缀进行网络字节序转换，以确保正确解析GUID前缀。于将GUID前缀从网络字节序转换为主机字节序。这样做的目的是为了确保接收方能够正确识别并处理GUID前缀，以正确地标识DDS实体。通过进行字节序转换，可以保证不同计算机之间在通信过程中正确地处理RTPS消息头部中的GUID前缀。
+
+if (gv->logconfig.c.mask & DDS_LC_TRACE): 检查是否开启了TRACE日志配置。
+
+ddsi_rtps_msg_state_t res = ddsi_security_decode_rtps_message (...): 调用安全性解码函数以处理RTPS消息的安全性，该函数会对消息进行解密和身份验证等处理。
+
+if (res != DDSI_RTPS_MSG_STATE_ERROR): 检查RTPS消息的处理结果是否出现错误。
+
+handle_submsg_sequence (...): 处理RTPS消息中的子消息序列，将子消息传递给相应的处理函数。
+
+*/
 static void handle_rtps_message (struct ddsi_thread_state * const thrst, struct ddsi_domaingv *gv, struct ddsi_tran_conn * conn, const ddsi_guid_prefix_t *guidprefix, struct ddsi_rbufpool *rbpool, struct ddsi_rmsg *rmsg, size_t sz, unsigned char *msg, const ddsi_locator_t *srcloc)
 {
   ddsi_rtps_header_t *hdr = (ddsi_rtps_header_t *) msg;
@@ -3214,6 +3529,22 @@ static void handle_rtps_message (struct ddsi_thread_state * const thrst, struct 
     {
       char addrstr[DDSI_LOCSTRLEN];
       ddsi_locator_to_string(addrstr, sizeof(addrstr), srcloc);
+      //这段代码使用 GVTRACE 宏输出一条日志，打印消息头中的一些信息。让我们分解一下：
+      // PGUIDPREFIX(hdr->guid_prefix)：打印消息头中的 GUID 前缀。
+      // hdr->vendorid.id[0] 和 hdr->vendorid.id[1]：打印消息头中的 vendor id。
+      // (unsigned long)sz：打印消息的长度。
+      // addrstr：打印地址字符串。
+      // 举个例子，假设消息头的 GUID 前缀为 0x12345678, vendor id 为 2.3，消息长度为 100 字节，地址字符串为 "192.168.1.1"。那么输出的日志信息可能类似于：
+      //HDR(12345678:12345678:12345678 vendor 2.3) len 100 from 192.168.1.1
+
+      /**
+    GUID（Globally Unique Identifier）前缀的长度通常是 12 个字节（96 位）。这 96 位被划分成三个部分：
+
+    48 位表示实体的唯一标识符（Entity ID）。
+    32 位表示实体的实例标识符（Instance ID）。
+    16 位表示实体的参与者标识符（Participant ID）。
+    这样的划分使得 GUID 在DDS（Data Distribution Service）中能够唯一标识参与者、实体、以及实体的实例。
+      */
       GVTRACE ("HDR(%"PRIx32":%"PRIx32":%"PRIx32" vendor %d.%d) len %lu from %s\n",
                PGUIDPREFIX (hdr->guid_prefix), hdr->vendorid.id[0], hdr->vendorid.id[1], (unsigned long) sz, addrstr);
     }
@@ -3230,12 +3561,65 @@ void ddsi_handle_rtps_message (struct ddsi_thread_state * const thrst, struct dd
   handle_rtps_message (thrst, gv, conn, guidprefix, rbpool, rmsg, sz, msg, srcloc);
 }
 
+/**
+ * 
+ * 
+定义变量和常量：函数开始时定义了一些变量和常量，包括最大数据包大小maxsz、DDS消息长度大小ddsi_msg_len_size、流消息头大小stream_hdr_size等。
+
+分配并初始化一个ddsi_rmsg结构：ddsi_rmsg是一个用于管理接收到的数据包的数据结构。在此函数中，通过ddsi_rmsg_new函数从接收缓冲池中获取一个空闲的ddsi_rmsg结构，用于存储接收到的数据包内容。
+
+获取接收缓冲区：根据传输连接的类型（流模式或非流模式），读取相应大小的数据到接收缓冲区buff中。如果是流模式，会首先读取DDS消息头和消息长度，然后再根据消息长度读取完整数据包；如果是非流模式，直接读取完整数据包。
+
+处理RTPS消息：如果成功从传输连接中读取数据，且gv->deaf标志为false（即本地不处于“聋”状态），则调用handle_rtps_message函数处理接收到的RTPS消息。
+
+提交ddsi_rmsg结构：最后通过ddsi_rmsg_commit函数提交ddsi_rmsg结构，使其变为有效，可以继续重用或释放。
+
+返回结果：函数返回一个布尔值，表示是否成功从传输连接中读取到数据。
+
+总体来说，do_packet函数负责读取传输连接中的数据，解析其中的RTPS消息，并交由handle_rtps_message函数进行进一步处理。这是接收线程在多播模式下处理数据包的核心函数之一。
+
+*/
+
+
+
+/**
+ 变量初始化：
+
+const size_t maxsz = gv->config.rmsg_chunk_size < 65536 ? gv->config.rmsg_chunk_size : 65536;：计算 UDP 数据包的最大大小，取配置值 rmsg_chunk_size 和 65536 中的较小者。
+const size_t ddsi_msg_len_size = 8;：定义 DDSI 消息长度的大小。
+const size_t stream_hdr_size = RTPS_MESSAGE_HEADER_SIZE + ddsi_msg_len_size;：计算流式数据的头部大小，包括 RTPS 消息头和 DDSI 消息长度。
+创建消息缓冲区：
+
+struct nn_rmsg *rmsg = nn_rmsg_new(rbpool);：使用消息池 rbpool 创建一个新的消息 rmsg。
+unsigned char *buff;：定义一个无符号字符指针 buff 用于存储消息的数据。
+size_t buff_len = maxsz;：初始化 buff_len 为计算得到的最大数据包大小。
+读取数据：
+
+sz = ddsi_conn_read(conn, buff, stream_hdr_size, true, &srcloc);：从连接 conn 中读取流式数据包的头部到 buff 中，返回读取的字节数，srcloc 存储了数据的来源定位器。
+根据连接是否为流式，有不同的读取方式：
+如果是流式连接：
+读取 DDSI 消息长度信息，包含在消息的头部中。
+根据消息长度信息，再次读取剩余的数据。
+如果不是流式连接：
+直接读取数据包。
+处理数据：
+
+如果成功读取数据（sz > 0）且系统不处于 deaf 模式，将消息的大小设置为 sz。
+调用 handle_rtps_message 处理 RTPS 消息，传递了相关的参数，包括消息、消息大小、数据缓冲区和数据来源定位器。
+清理：
+
+nn_rmsg_commit(rmsg);：提交消息，释放使用的资源。
+返回值为 sz > 0，表示是否成功读取和处理数据。
+*/
 static bool do_packet (struct ddsi_thread_state * const thrst, struct ddsi_domaingv *gv, struct ddsi_tran_conn * conn, const ddsi_guid_prefix_t *guidprefix, struct ddsi_rbufpool *rbpool)
 {
   /* UDP max packet size is 64kB */
 
   const size_t maxsz = gv->config.rmsg_chunk_size < 65536 ? gv->config.rmsg_chunk_size : 65536;
-  const size_t ddsi_msg_len_size = 8;
+  // DDSI_RTPS_MESSAGE_HEADER_SIZE 是 RTPS 协议消息头的大小。
+  // ddsi_msg_len_size 是额外的消息长度信息所占的字节数。
+  // 因此，stream_hdr_size 表示整个 RTPS 数据包头的大小。这个大小在接收数据包时用于确定应该读取多少字节的数据作为头部信息，以及在后续的处理中使用。
+  // const size_t ddsi_msg_len_size = 8;
   const size_t stream_hdr_size = DDSI_RTPS_MESSAGE_HEADER_SIZE + ddsi_msg_len_size;
   ssize_t sz;
   struct ddsi_rmsg * rmsg = ddsi_rmsg_new (rbpool);
@@ -3248,13 +3632,21 @@ static bool do_packet (struct ddsi_thread_state * const thrst, struct ddsi_domai
   {
     return false;
   }
-
+  //静态断言 DDSRT_STATIC_ASSERT (sizeof (struct ddsi_rmsg) == offsetof (struct ddsi_rmsg, chunk) + sizeof (struct ddsi_rmsg_chunk)); 确保结构体 struct ddsi_rmsg 的大小等于其成员 chunk 的偏移量加上 struct ddsi_rmsg_chunk 结构体的大小。
   DDSRT_STATIC_ASSERT (sizeof (struct ddsi_rmsg) == offsetof (struct ddsi_rmsg, chunk) + sizeof (struct ddsi_rmsg_chunk));
   buff = (unsigned char *) DDSI_RMSG_PAYLOAD (rmsg);
   hdr = (ddsi_rtps_header_t*) buff;
 
   if (conn->m_stream)
   {
+
+    /*
+    这行代码的目的是通过将 hdr（消息头的起始地址）后移一个单位，得到一个指向 ddsi_rtps_msg_len_t 类型的指针 ml。在C语言中，通过将指针后移，可以访问指针指向的类型后面的数据。在这里，hdr 是消息头的起始地址，hdr + 1 就是消息头之后的地址，而且它被强制类型转换为 ddsi_rtps_msg_len_t* 类型。
+
+    这个技巧通常用于解析可变长度的结构。在这个特定的情况中，hdr 应该是一个结构体指针，指向消息头。通过将其后移一个单位，指针就指向了消息头之后的数据部分，即 ddsi_rtps_msg_len_t 结构。这是因为 hdr + 1 实际上是指向 hdr 后面一个单元的位置。
+
+    所以，通过这个操作，你可以通过 ml 访问消息头之后的数据，也就是消息长度信息。这是一种处理包含可变长度数据的结构的一种常见方式。
+    */
     ddsi_rtps_msg_len_t * ml = (ddsi_rtps_msg_len_t*) (hdr + 1);
 
     /*
@@ -3263,6 +3655,25 @@ static bool do_packet (struct ddsi_thread_state * const thrst, struct ddsi_domai
     */
 
     /* Read in DDSI header plus MSG_LEN sub message that follows it */
+
+
+
+
+    /**
+    if (conn->m_stream)：检查连接是否为流式连接。
+
+    ddsi_rtps_msg_len_t *ml = (ddsi_rtps_msg_len_t*) (hdr + 1);：将 hdr 后移一个单位，得到一个 ddsi_rtps_msg_len_t 类型的指针 ml。这是为了读取消息长度信息。
+
+    sz = ddsi_conn_read(conn, buff, stream_hdr_size, true, &srcloc);：从连接 conn 中读取消息的头部（stream_hdr_size 大小）。这个头部包含 DDSI 头部和一个 MSG_LEN 子消息。函数返回读取的字节数。
+
+    if (sz == 0)：如果读取的字节数为零，这表示可能发生了错误，但在这个阶段还可以继续。这是因为一些流式连接可能表现出这样的行为，不一定代表错误。
+
+    int swap; if (ml->smhdr.flags & DDSI_RTPS_SUBMESSAGE_FLAG_ENDIANNESS)：检查消息头中的字节序标志，确定是否需要进行字节序转换。
+
+    swap = !(DDSRT_ENDIAN == DDSRT_LITTLE_ENDIAN);：如果消息的字节序标志指示大端序，那么需要进行字节序转换。
+
+    if (swap) { ml->length = ddsrt_bswap4u(ml->length); }：如果需要字节序转换，对消息长度进行转换。
+    */
 
     sz = ddsi_conn_read (conn, buff, stream_hdr_size, true, &srcloc);
     if (sz == 0)
@@ -3293,6 +3704,16 @@ static bool do_packet (struct ddsi_thread_state * const thrst, struct ddsi_domai
         ml->length = ddsrt_bswap4u (ml->length);
       }
 
+      /*
+      if (ml->smhdr.submessageId != DDSI_RTPS_SMID_ADLINK_MSG_LEN)：检查子消息的标识符是否符合预期的 DDSI_RTPS_SMID_ADLINK_MSG_LEN。
+
+      malformed_packet_received(gv, buff, NULL, (size_t)sz, hdr->vendorid);：如果子消息标识符不符合预期，调用 malformed_packet_received 函数，处理消息格式错误的情况。
+
+      sz = ddsi_conn_read(conn, buff + stream_hdr_size, ml->length - stream_hdr_size, false, NULL);：读取消息的剩余部分（除去头部）。
+
+      if (sz > 0) { sz = (ssize_t)ml->length; }：如果成功读取消息的剩余部分，则将 sz 设置为消息的总长度，否则将 sz 设置为 -1，表示出现错误。
+      
+      */
       if (ml->smhdr.submessageId != DDSI_RTPS_SMID_ADLINK_MSG_LEN)
       {
         malformed_packet_received (gv, buff, NULL, (size_t) sz, hdr->vendorid);
@@ -3510,6 +3931,91 @@ void ddsi_trigger_recv_threads (const struct ddsi_domaingv *gv)
   }
 }
 
+/*
+struct ddsi_thread_state * const thrst = ddsi_lookup_thread_state ();: 获取当前线程的状态结构体thrst。
+
+struct ddsi_recv_thread_arg *recv_thread_arg = vrecv_thread_arg;: 将传入的参数vrecv_thread_arg强制类型转换为struct ddsi_recv_thread_arg类型，并赋值给recv_thread_arg。
+
+struct ddsi_domaingv * const gv = recv_thread_arg->gv;: 从参数中获取全局域结构体指针gv。
+
+struct ddsi_rbufpool *rbpool = recv_thread_arg->rbpool;: 从参数中获取接收缓冲池结构体指针rbpool。
+
+struct ddsi_sock_waitset * waitset = recv_thread_arg->mode == DDSI_RTM_MANY ? recv_thread_arg->u.many.ws : NULL;: 根据传入的线程模式，将多播模式下的ddsrt_sock_waitset对象赋值给waitset。在单播模式下，waitset将为NULL。
+
+ddsi_rbufpool_setowner (rbpool, ddsrt_thread_self ());: 设置接收缓冲池的所有者线程为当前线程。
+
+接下来，根据工作模式执行不同的接收逻辑：
+
+a. 在单播模式下，通过循环监听单个传输连接（conn），并在每次循环中调用do_packet函数处理接收到的数据包。
+
+b. 在多播模式下，使用local_participant_set结构来管理多个传输连接，并在需要时重建waitset以反映参与者（participant）的更改。在循环中，等待waitset中的任何传输连接上的事件，然后调用do_packet函数处理接收到的数据包。
+
+在处理完数据包后，继续执行下一次循环直到gv->rtps_keepgoing为false，表示接收线程需要退出。
+
+GVTRACE ("done\n");: 输出日志，表示接收线程完成任务。
+
+总结：ddsi_recv_thread函数负责在不同的工作模式下，接收和处理来自不同传输连接的数据包，并将其交给do_packet函数进行处理。它是接收线程的主要逻辑实现。在单播模式下，它通过循环监听单个传输连接；在多播模式下，它使用waitset对象来管理多个传输连接并等待事件。这样，接收线程能够高效地处理接收到的数据，并将其分发给相应的处理逻辑。
+
+*/
+
+/*
+
+struct thread_state1 * const ts1 = lookup_thread_state ();：获取当前线程的状态。
+
+struct recv_thread_arg *recv_thread_arg = vrecv_thread_arg;：将传递给线程的参数转换为 recv_thread_arg 结构。
+
+struct ddsi_domaingv * const gv = recv_thread_arg->gv;：获取域的全局变量。
+
+struct nn_rbufpool *rbpool = recv_thread_arg->rbpool;：获取消息缓冲池。
+
+os_sockWaitset waitset = recv_thread_arg->mode == RTM_MANY ? recv_thread_arg->u.many.ws : NULL;：根据模式选择是否使用等待集（waitset）。
+
+nn_rbufpool_setowner (rbpool, ddsrt_thread_self ());：设置消息缓冲池的所有权。
+
+if (waitset == NULL)：如果没有等待集，说明是单一连接模式。
+
+struct ddsi_tran_conn *conn = recv_thread_arg->u.single.conn;：获取单一连接。
+
+while (ddsrt_atomic_ld32 (&gv->rtps_keepgoing))：循环，只要全局变量 rtps_keepgoing 为真。
+
+LOG_THREAD_CPUTIME (&gv->logconfig, next_thread_cputime);：记录线程 CPU 时间。
+
+(void) do_packet (ts1, gv, conn, NULL, rbpool);：调用 do_packet 处理数据包。
+
+else：如果有等待集，说明是多连接模式。
+
+struct local_participant_set lps;：本地参与者集合结构。
+
+unsigned num_fixed = 0, num_fixed_uc = 0;：计数器，记录固定连接的数量。
+
+os_sockWaitsetCtx ctx;：等待集上下文。
+
+local_participant_set_init (&lps, &gv->participant_set_generation);：初始化本地参与者集合。
+
+接下来进入主循环：
+
+int rebuildws = 0;：标志是否需要重建等待集。
+
+LOG_THREAD_CPUTIME (&gv->logconfig, next_thread_cputime);：记录线程 CPU 时间。
+
+如果多播模式，检查是否需要重建等待集。
+
+if ((ctx = os_sockWaitsetWait (waitset)) != NULL)：如果等待集上有事件发生。
+
+循环处理等待集中的事件：
+
+如果是固定连接或者是多播模式，guid_prefix = NULL；否则，获取参与者的 GUID 前缀。
+
+if (!do_packet (ts1, gv, conn, guid_prefix, rbpool) && !conn->m_connless)：处理数据包，如果失败且不是无连接连接，则释放连接。
+
+local_participant_set_fini (&lps);：释放本地参与者集合的资源。
+
+GVTRACE ("done\n");：记录线程完成。
+
+return 0;：返回 0。
+
+
+*/
 uint32_t ddsi_recv_thread (void *vrecv_thread_arg)
 {
   struct ddsi_thread_state * const thrst = ddsi_lookup_thread_state ();
@@ -3531,12 +4037,31 @@ uint32_t ddsi_recv_thread (void *vrecv_thread_arg)
   }
   else
   {
+    //使用local_participant_set结构来管理多个传输连接
     struct local_participant_set lps;
     unsigned num_fixed = 0, num_fixed_uc = 0;
     struct ddsi_sock_waitset_ctx * ctx;
     local_participant_set_init (&lps, &gv->participant_set_generation);
+
+  /// Whether this is a connection-oriented transport like TCP (false), where a socket communicates
+  /// with one other socket after connecting; or whether it can send to any address at any time like
+  /// UDP (true).
+  bool m_connless;
     if (gv->m_factory->m_connless)
     {
+      //recv_thread_waitset_add_conn函数的作用是将一个传输连接（struct ddsi_tran_conn）添加到ddsrt_sock_waitset对象中。这样做的目的是使接收线程能够通过等待waitset上的事件来处理多个传输连接，而无需在循环中轮询每个传输连接。在多播模式下，接收线程可能需要监听多个传输连接，这些传输连接可能对应不同的参与者（participant）或者传输方式（unicast/multicast）。通过将这些传输连接添加到waitset对象中，接收线程可以通过等待waitset上的事件，来处理到达这些传输连接的数据包。这样，接收线程就可以更高效地处理数据包的接收和分发。
+      //函数签名：int recv_thread_waitset_add_conn(struct ddsi_sock_waitset *ws, struct ddsi_tran_conn *conn);
+
+      // 参数说明：
+
+      // ws：要添加传输连接的ddsrt_sock_waitset对象。
+      // conn：要添加到waitset的传输连接。
+      // 返回值：
+
+      // 返回值为正数表示成功添加传输连接到waitset。
+      // 返回值为负数表示添加失败。
+      // 请注意，recv_thread_waitset_add_conn函数只在多播模式下使用，因为在单播模式下只需要监听一个传输连接。
+
       int rc;
       if ((rc = recv_thread_waitset_add_conn (waitset, gv->disc_conn_uc)) < 0)
         DDS_FATAL("recv_thread: failed to add disc_conn_uc to waitset\n");
@@ -3574,11 +4099,25 @@ uint32_t ddsi_recv_thread (void *vrecv_thread_arg)
       {
         /* no other sockets to check */
       }
+      /*
+      gv->participant_set_generation：这是一个全局变量，可能表示参与者集合的当前代数或版本。在分布式系统中，可能会有多个参与者（participants），每个参与者都有一个唯一的标识。当有新的参与者加入或离开系统时，版本号可能会被递增，表示发生了变化。
+
+      lps.gen：这是本地参与者集合（lps）的版本号。该版本号在初始化时设置，并且在每次重建等待集合时可能会更新。
+
+      因此，条件 ddsrt_atomic_ld32 (&gv->participant_set_generation) != lps.gen 意味着如果全局参与者集合的版本号与本地参与者集合的版本号不相等，就设置 rebuildws 为1，表示需要重建等待集合。这通常表示有新的参与者加入或离开系统，需要更新等待集合以反映这些变化。
+      
+      */
       else if (ddsrt_atomic_ld32 (&gv->participant_set_generation) != lps.gen)
       {
         rebuildws = 1;
       }
 
+    /*
+    如果需要重新建立等待集合（rebuildws 为真），并且配置为许多套接字模式，那么执行以下操作：
+    重建本地参与者集合。
+    清除等待集合中的固定连接。
+    将本地参与者集合中的连接添加到等待集合。
+    */
       if (rebuildws && waitset && gv->config.many_sockets_mode == DDSI_MSM_MANY_UNICAST)
       {
         /* first rebuild local participant set - unless someone's toggling "deafness", this
@@ -3592,6 +4131,13 @@ uint32_t ddsi_recv_thread (void *vrecv_thread_arg)
         }
       }
 
+      /*
+      在主循环中，首先检查程序是否需要保持运行。
+      然后，它检查等待集合中的事件。
+      如果有事件发生，就遍历这些事件并处理每个事件。
+      do_packet 函数用于处理接收到的数据包。
+      如果数据包处理失败或连接关闭，ddsi_conn_free 会释放连接
+      */
       if ((ctx = ddsi_sock_waitset_wait (waitset)) != NULL)
       {
         int idx;

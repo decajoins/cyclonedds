@@ -81,6 +81,18 @@ struct ddsi_entity_common {
   ddsrt_mutex_t qos_lock;
 };
 
+
+/*
+ddrt_mutex_t rdary_lock;：互斥锁，用于对本地读者数组进行加锁，以确保在多线程环境中对数组的访问是线程安全的。
+
+unsigned valid: 1;：一个位字段，占用1位，表示本地读者数组是否有效。始终为真，直到（代理）写入器被删除；!valid 表示 !fastpath_ok，即数组无效时，不可使用快速路径。
+
+unsigned fastpath_ok: 1;：另一个位字段，占用1位，表示是否可以使用快速路径。如果不可使用，则回退到使用GUID（以访问读者-写者匹配数据，用于处理由于资源限制而受到影响的读者），因此可以在 valid 和 fastpath_ok 之间进行翻转，不同于 "valid"。
+
+uint32_t n_readers;：表示数组中的读者数量。
+
+struct ddsi_reader **rdary;：指向 ddsi_reader 结构体指针的指针，用于存储读者的数组。为了实现有效的传递，该数组以空指针终止，并且读者按照主题进行分组。
+*/
 struct ddsi_local_reader_ary {
   ddsrt_mutex_t rdary_lock;
   unsigned valid: 1; /* always true until (proxy-)writer is being deleted; !valid => !fastpath_ok */

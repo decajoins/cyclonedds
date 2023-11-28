@@ -120,7 +120,7 @@ void dds_handle_server_fini (void)
 static bool hhadd (struct ddsrt_hh *ht, void *elem) { return ddsrt_hh_add (ht, elem); }
 static dds_handle_t dds_handle_create_int (struct dds_handle_link *link, bool implicit, bool refc_counts_children, bool user_access)
 {
-  uint32_t flags = HDL_FLAG_PENDING;
+  uint32_t flags = HDL_FLAG_PENDING; //将 HDL_FLAG_PENDING 设置为初始值。
   flags |= implicit ? HDL_FLAG_IMPLICIT : HDL_REFCOUNT_UNIT;
   flags |= refc_counts_children ? HDL_FLAG_ALLOW_CHILDREN : 0;
   flags |= user_access ? 0 : HDL_FLAG_NO_USER_ACCESS;
@@ -130,7 +130,7 @@ static dds_handle_t dds_handle_create_int (struct dds_handle_link *link, bool im
       link->hdl = (int32_t) (ddsrt_random () & INT32_MAX);
     } while (link->hdl == 0 || link->hdl >= DDS_MIN_PSEUDO_HANDLE);
   } while (!hhadd (handles.ht, link));
-  return link->hdl;
+  return link->hdl;//返回创建的句柄。
 }
 
 dds_handle_t dds_handle_create (struct dds_handle_link *link, bool implicit, bool allow_children, bool user_access)
@@ -167,9 +167,9 @@ dds_return_t dds_handle_register_special (struct dds_handle_link *link, bool imp
   {
     handles.count++;
     ddsrt_atomic_st32 (&link->cnt_flags, HDL_FLAG_PENDING | (implicit ? HDL_FLAG_IMPLICIT : HDL_REFCOUNT_UNIT) | (allow_children ? HDL_FLAG_ALLOW_CHILDREN : 0) | 1u);
-    link->hdl = handle;
+    link->hdl = handle;  //将实体链接的句柄值设置为给定的特殊句柄值。
     if (hhadd (handles.ht, link))
-      ret = handle;
+      ret = handle;  //将句柄值作为返回值
     else
       ret = DDS_RETCODE_BAD_PARAMETER;
     ddsrt_mutex_unlock (&handles.lock);
@@ -178,7 +178,7 @@ dds_return_t dds_handle_register_special (struct dds_handle_link *link, bool imp
   return ret;
 }
 
-void dds_handle_unpend (struct dds_handle_link *link)
+void dds_handle_unpend (struct dds_handle_link *link)//取消句柄的挂起状态
 {
 #ifndef NDEBUG
   uint32_t cf = ddsrt_atomic_ld32 (&link->cnt_flags);
@@ -189,7 +189,7 @@ void dds_handle_unpend (struct dds_handle_link *link)
   assert ((cf & HDL_PINCOUNT_MASK) >= 1u);
 #endif
   ddsrt_atomic_and32 (&link->cnt_flags, ~HDL_FLAG_PENDING);
-  dds_handle_unpin (link);
+  dds_handle_unpin (link);//取消句柄的 pin 状态。
 }
 
 int32_t dds_handle_delete (struct dds_handle_link *link)
@@ -251,12 +251,15 @@ static int32_t dds_handle_pin_int (dds_handle_t hdl, uint32_t delta, bool from_u
           break;
         }
       }
-    } while (!ddsrt_atomic_cas32 (&(*link)->cnt_flags, cf, cf + delta));
+    } while (!ddsrt_atomic_cas32 (&(*link)->cnt_flags, cf, cf + delta));//说明在比较和更新期间没有其他线程修改计数标志，可以进行更新。如果不相等，说明其他线程已经修改了计数标志，更新操作失败，需要重新进行比较和更新的尝试。
   }
   ddsrt_mutex_unlock (&handles.lock);
   return rc;
 }
 
+//在软件开发中，"pin" 操作通常用于表示对某个资源或对象的保持、锁定或占用。具体来说，在句柄操作中，
+//"pin" 操作用于保持对句柄所代表的实体或资源的访问权限，防止其在被其他操作关闭或释放之前被意外地关闭或释放。
+//句柄的引用计数增加操作
 int32_t dds_handle_pin (dds_handle_t hdl, struct dds_handle_link **link)
 {
   return dds_handle_pin_int (hdl, 1u, true, link);
@@ -399,7 +402,7 @@ bool dds_handle_drop_childref_and_pin (struct dds_handle_link *link, bool may_de
   do {
     cf = ddsrt_atomic_ld32 (&link->cnt_flags);
 
-    if (cf & (HDL_FLAG_CLOSING | HDL_FLAG_PENDING))
+    if (cf & (HDL_FLAG_CLOSING | HDL_FLAG_PENDING))//表示句柄正在关闭或挂起状态，这意味着子引用仍需移除，
     {
       /* Only one can succeed; child ref still to be removed */
       assert ((cf & HDL_REFCOUNT_MASK) > 0);
@@ -411,7 +414,7 @@ bool dds_handle_drop_childref_and_pin (struct dds_handle_link *link, bool may_de
       if (cf & HDL_FLAG_IMPLICIT)
       {
         /* Implicit parent: delete if last ref */
-        if ((cf & HDL_REFCOUNT_MASK) == HDL_REFCOUNT_UNIT && may_delete_parent)
+        if ((cf & HDL_REFCOUNT_MASK) == HDL_REFCOUNT_UNIT && may_delete_parent)     //判断是否是最后一个引用，如果是并且允许删除父节点（may_delete_parent 为 true）
         {
           cf1 = (cf - HDL_REFCOUNT_UNIT + 1u);
           del_parent = true;
@@ -469,6 +472,7 @@ void dds_handle_add_ref (struct dds_handle_link *link)
   ddsrt_atomic_add32 (&link->cnt_flags, HDL_REFCOUNT_UNIT);
 }
 
+//减少句柄的引用计数，用计数是否变为0
 bool dds_handle_drop_ref (struct dds_handle_link *link)
 {
   uint32_t old, new;
