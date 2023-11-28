@@ -59,6 +59,29 @@ static void addr_to_loc (const struct ddsi_tran_factory *tran, ddsi_locator_t *d
   ddsi_ipaddr_to_loc (dst, &src->a, (src->a.sa_family == AF_INET) ? DDSI_LOCATOR_KIND_UDPv4 : DDSI_LOCATOR_KIND_UDPv6);
 }
 
+/*
+首先，它将传入的通用连接对象 conn_cmn 强制类型转换为 UDP 连接对象 conn。
+
+通过 conn 对象获取相关的全局信息，如 gv 和 m_sock（套接字描述符），这些信息用于后续的操作。
+
+代码检查是否启用了诊断支持，如果是的话，它获取一个名为 diagInfoObj 的诊断信息对象。
+
+然后，它设置接收消息的缓冲区 msg_iov，该缓冲区位于 buf 中，其大小为 len 字节。
+
+设置一个用于存储数据包来源地址的结构体 src。
+
+创建一个 msghdr 结构体，其中包括消息的目标地址、缓冲区信息等。
+
+调用 ddsi_recvmsg 函数来接收消息，并将结果存储在 nrecv 中。
+
+如果成功接收到数据包（nrecv > 0），代码将处理一些诊断和日志信息，例如检查是否启用了诊断支持，以及将接收到的数据写入 pcap 文件（如果已打开）。
+
+最后，如果接收到的数据包大小超过了指定的 len，或者发生了 UDP 包截断，代码会生成一个警告消息。
+
+在函数末尾，它将返回接收到的字节数，如果出现错误，则返回 -1。
+
+此代码主要用于接收UDP数据包并进行相应的处理，包括诊断和日志记录。
+*/
 static ssize_t ddsi_udp_conn_read (struct ddsi_tran_conn * conn_cmn, unsigned char * buf, size_t len, bool allow_spurious, ddsi_locator_t *srcloc)
 {
   ddsi_udp_conn_t conn = (ddsi_udp_conn_t) conn_cmn;

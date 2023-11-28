@@ -104,6 +104,21 @@ struct ddsi_tran_base
   ddsi_tran_handle_fn_t m_handle_fn;
 };
 
+/*
+
+struct ddsi_tran_base m_base;：这是一个成员变量，可能是用于存储基础通信连接信息的结构体。
+
+函数指针变量（Function Pointers）：接下来的几个成员变量是函数指针，它们用于指向特定类型的函数，这些函数执行连接的不同操作。例如，m_shutdown_fn 可能指向一个用于关闭连接的函数，
+m_read_fn 可能指向一个用于读取数据的函数，等等。
+
+布尔值成员变量：m_server、m_connless、m_stream 和 m_closed 是布尔类型的成员变量，用于存储连接的状态信息，例如是否是服务器端、是否是无连接通信、是否是流式通信等。
+
+ddsi_tran_factory_t 和 ddsi_tran_listener_t：这些成员变量可能是与连接工厂（factory）和连接监听器（listener）相关的信息。
+
+m_conn：可能用于表示连接本身的信息。
+
+real_src_ip：这是一个数组，存储了一个IPv6地址的字节表示，用于表示连接的真实源IP地址。
+*/
 struct ddsi_tran_conn
 {
   struct ddsi_tran_base m_base;

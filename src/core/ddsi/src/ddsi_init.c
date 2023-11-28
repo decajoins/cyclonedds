@@ -1383,6 +1383,23 @@ int ddsi_init (struct ddsi_domaingv *gv)
 
   gv->m_tkmap = ddsi_tkmap_new (gv);
 
+  /*
+  这段代码是在初始化一个DDS（Data Distribution Service）系统的过程中进行配置的一部分，它主要用于设置和分配单播（Unicast）通信的端口和参与者（Participant）索引。
+
+  以下是关键步骤的解释：
+
+  如果 gv->m_factory->m_connless 为真，表示该系统支持无连接通信（可能是一种UDP通信方式）。这部分代码主要处理UDP通信相关的配置。
+
+  通过检查 gv->config.participantIndex 的值，确定如何分配单播端口和参与者索引。参与者索引通常用于标识不同的DDS参与者。
+
+  如果 gv->config.participantIndex 大于等于0或等于 DDSI_PARTICIPANT_INDEX_NONE，则调用 make_uc_sockets 函数来创建单播套接字，并为单播通信分配端口号。
+
+  如果 gv->config.participantIndex 等于 DDSI_PARTICIPANT_INDEX_AUTO，则尝试查找一个可用的参与者索引。这是通过循环迭代来实现的，每次迭代都会尝试调用 make_uc_sockets 来创建套接字并分配端口号，直到找到一个可用的参与者索引或达到最大尝试次数。
+
+  如果 gv->config.participantIndex 的值无效，将会产生错误信息并跳转到错误处理标签 err_unicast_sockets。
+
+  最后，日志信息将记录单播通信的端口和参与者索引
+  */
   if (gv->m_factory->m_connless)
   {
     //participantIndex确定如何分配单播端口和参与者索引。参与者索引通常用于标识不同的DDS参与者。
@@ -1459,6 +1476,20 @@ int ddsi_init (struct ddsi_domaingv *gv)
   }
 
   gv->mship = ddsi_new_mcgroup_membership();
+  /*
+  如果gv->m_factory->m_connless为真，表示系统处于“无连接”模式下：
+
+  如果不满足条件gv->config.many_sockets_mode == DDSI_MSM_NO_UNICAST && gv->config.allowMulticast，则打印相关日志信息，包括发现端口和数据端口的配置。
+  如果允许组播通信（gv->config.allowMulticast为真），则调用create_multicast_sockets(gv)函数来创建多播套接字，这将用于多播通信。如果创建失败，跳转到err_mc_conn标签处。
+  如果配置指定为“无单播模式”（gv->config.many_sockets_mode == DDSI_MSM_NO_UNICAST），则将多播连接作为单播连接。这涉及将数据连接和发现连接的端口设置为多播连接的端口，以及手动为发现连接和默认连接设置定位器（locators）。
+  最后，设置多播定位器（locators）的端口信息，以便正确发送和接收多播消息。
+  如果gv->m_factory->m_connless为假，表示系统处于有连接模式下：
+
+  如果配置指定TCP端口（gv->config.tcp_port不等于-1），则检查该端口是否在有效范围内。如果不在有效范围内，会打印错误信息。
+  如果端口有效，则创建一个监听器（listener），并为该监听器指定TCP端口号。如果创建和监听失败，将打印错误信息，并释放已创建的监听器。
+  设置单播定位器（locators）为未指定状态。
+  最后，将监听器的定位器设置为多播定位器，以便正确发送和接收多播消息。
+  */
   if (gv->m_factory->m_connless)
   {
     if (!(gv->config.many_sockets_mode == DDSI_MSM_NO_UNICAST && gv->config.allowMulticast))
