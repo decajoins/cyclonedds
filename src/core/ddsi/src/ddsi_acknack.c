@@ -26,6 +26,7 @@
 
 #define ACK_REASON_IN_FLAGS 0
 
+//根据已接收的数据的最新序列号 next_seq 和已经交付的数据的低32位序列号，计算下一个应该用于确认的交付序列号。
 static ddsi_seqno_t next_deliv_seq (const struct ddsi_proxy_writer *pwr, const ddsi_seqno_t next_seq)
 {
   /* We want to determine next_deliv_seq, the next sequence number to
@@ -66,49 +67,91 @@ static ddsi_seqno_t next_deliv_seq (const struct ddsi_proxy_writer *pwr, const d
      FIXME: next_seq - #dqueue could probably be used instead,
      provided #dqueue is decremented after delivery, rather than
      before delivery. */
+     //表示下一个交付序列号的低32位。
   const uint32_t lw = ddsrt_atomic_ld32 (&pwr->next_deliv_seq_lowword);
+  //使用 next_seq 的高32位与加载的低32位，构建下一个交付序列号 next_deliv_seq。
   ddsi_seqno_t next_deliv_seq;
   next_deliv_seq = (next_seq & ~(uint64_t)UINT32_MAX) | lw;
+  //如果 next_deliv_seq 大于 next_seq，表示高32位溢出，需要减去 2^32。这是因为序列号是64位的，而 next_deliv_seq 只包含了低32位。
   if (next_deliv_seq > next_seq)
     next_deliv_seq -= ((uint64_t) 1) << 32;
   assert (0 < next_deliv_seq && next_deliv_seq <= next_seq);
   return next_deliv_seq;
 }
 
+//该函数的目的是为 ACKNACK 消息构建序列号位图提供正确的源信息
 static void add_acknack_getsource (const struct ddsi_proxy_writer *pwr, const struct ddsi_pwr_rd_match *rwn, struct ddsi_reorder **reorder, ddsi_seqno_t *bitmap_base, int *notail)
 {
   /* if in sync, look at proxy writer status, else look at proxy-writer--reader match status */
+  //检查代理写入者（pwr）与代理写入者-读取者匹配（rwn）的同步状态。如果不同步或者读取者被过滤，则使用not_in_sync 结构体的重新排序（reorder）。
   if (rwn->in_sync == PRMSS_OUT_OF_SYNC || rwn->filtered)
   {
     *reorder = rwn->u.not_in_sync.reorder;
     *bitmap_base = ddsi_reorder_next_seq (*reorder);
     *notail = 0;
   }
+  //否则，使用代理写入者的重新排序对象 pwr->reorder
   else
   {
     *reorder = pwr->reorder;
+    //如果不使用延迟确认模式，即 !pwr->e.gv->config.late_ack_mode，则直接使用重新排序对象的下一个序列号 ddsi_reorder_next_seq (*reorder) 作为位图的基础。
     if (!pwr->e.gv->config.late_ack_mode)
     {
       *bitmap_base = ddsi_reorder_next_seq (*reorder);
+      //如果不使用延迟确认模式，即 !pwr->e.gv->config.late_ack_mode，或者读取者队列未满，即 ddsi_dqueue_is_full (pwr->dqueue) 返回 false，则将 *notail 设置为 0。
       *notail = 0;
     }
+    //否则，调用之前提到的 next_deliv_seq 函数，使用代理写入者和重新排序对象的下一个序列号计算应该用于确认的下一个交付序列号
     else
     {
       *bitmap_base = next_deliv_seq (pwr, ddsi_reorder_next_seq (*reorder));
+      //否则，将 *notail 设置为 1。
       *notail = ddsi_dqueue_is_full (pwr->dqueue);
     }
   }
 }
 
+
+/*
+
+
+让我们假设有一个数据流，包含一系列按顺序到达的数据样本。每个样本由一个序列号（sequence number）和若干个片段（fragments）组成。
+
+创建代理写入者（Proxy Writer）： 首先，我们创建一个代理写入者 pwr，该代理写入者维护了一些状态，如最后接收到的序列号 last_seq 和最后接收到的片段号 last_fragnum。
+struct ddsi_pwr_rd_match rwn;
+rwn.in_sync = PRMSS_IN_SYNC;   // 与读取者同步
+rwn.filtered = false;          // 未被过滤
+
+创建位图信息结构（AckNack Info）： 我们创建一个结构 info，用于存储生成的 ACKNACK 消息的位图信息以及可能的 NACKFRAG 信息。
+
+struct ddsi_add_acknack_info info;
+生成 ACKNACK 位图： 调用 add_acknack_makebitmaps 函数生成 ACKNACK 位图。
+
+bool success = add_acknack_makebitmaps(&pwr, &rwn, &info);
+在这个例子中，add_acknack_makebitmaps 函数会生成 ACKNACK 位图，该位图表示在代理写入者 pwr 和读取者匹配 rwn 之间存在的缺失序列号。假设生成的位图包含了缺失的序列号。
+
+生成 NACKFRAG 信息： 如果存在缺失的序列号，会调用 ddsi_defrag_nackmap 函数生成 NACKFRAG 信息。
+
+if (success && info.nackfrag.seq > 0) {
+    // 生成 NACKFRAG 信息
+    // info.nackfrag 包含了缺失的序列号及其对应的缺失片段信息
+}
+在这个例子中，info.nackfrag.seq 表示存在缺失的序列号，我们可以根据需要使用 info.nackfrag 中的信息生成 NACKFRAG。 
+
+*/
+//主要用于生成 ACKNACK 消息的序列号位图，并在有需要时生成 NACKFRAG
 static bool add_acknack_makebitmaps (const struct ddsi_proxy_writer *pwr, const struct ddsi_pwr_rd_match *rwn, struct ddsi_add_acknack_info *info)
 {
   struct ddsi_reorder *reorder;
   ddsi_seqno_t bitmap_base;
   int notail; /* notail = false: all known missing ones are nack'd */
+  //获取源信息：调用 add_acknack_getsource 函数，获取应该用于构建位图的源信息，包括重新排序对象、位图基础和是否使用尾部标志。
   add_acknack_getsource (pwr, rwn, &reorder, &bitmap_base, &notail);
 
   /* Make bitmap; note that we've made sure to have room for the maximum bitmap size. */
   const ddsi_seqno_t last_seq = rwn->filtered ? rwn->last_seq : pwr->last_seq;
+  //使用 ddsi_reorder_nackmap 函数生成序列号位图。此函数计算重新排序对象 reorder 中
+  //从 bitmap_base 到 last_seq 之间的缺失序列号，并填充到 info->acknack.set 和 info->acknack.bits 中。如果所有位都是零，表示没有缺失的序列号，则返回 false。
   const uint32_t numbits = ddsi_reorder_nackmap (reorder, bitmap_base, last_seq, &info->acknack.set, info->acknack.bits, DDSI_SEQUENCE_NUMBER_SET_MAX_BITS, notail);
   if (numbits == 0)
   {
@@ -118,6 +161,11 @@ static bool add_acknack_makebitmaps (const struct ddsi_proxy_writer *pwr, const 
 
   /* Scan through bitmap, cutting it off at the first missing sample that the defragmenter
      knows about. Then note the sequence number & add a NACKFRAG for that sample */
+     /*
+     遍历生成的位图，对于每个缺失的序列号，调用 ddsi_defrag_nackmap 函数检查是否有缺失的片段。
+    如果所有广告的片段都已知，则截断 ACKNACK 并返回 false。如果这是第一个样本，则将其截断为 ACK。
+    如果有缺失的片段，则截断 ACKNACK，并生成 NACKFRAG，将缺失的序列号存储在 info->nackfrag.seq 中。
+     */
   info->nackfrag.seq = 0;
   const ddsi_seqno_t base = ddsi_from_seqno (info->acknack.set.bitmap_base);
   for (uint32_t i = 0; i < numbits; i++)
@@ -143,18 +191,25 @@ static bool add_acknack_makebitmaps (const struct ddsi_proxy_writer *pwr, const 
         return true;
     }
   }
+  //返回 true 表示 ACKNACK 和（如果有的话）NACKFRAG 已经生成，可以发送给读取者。
   return true;
 }
 
+//这个函数的目的是在传输消息中生成 NACKFRAG 子消息。它构建了相应的数据结构，填充了相关字段，并追加到传输消息中。这样，当消息发送到读取者时，读取者将了解到缺失的片段信息，并可以请求重传。
 static void add_NackFrag (struct ddsi_xmsg *msg, const struct ddsi_proxy_writer *pwr, const struct ddsi_pwr_rd_match *rwn, const struct ddsi_add_acknack_info *info)
 {
+  // 为 NACKFRAG 创建一个消息标记和数据结构
   struct ddsi_xmsg_marker sm_marker;
   ddsi_rtps_nackfrag_t *nf;
 
+  // 确保有缺失的片段信息
   assert (info->nackfrag.set.numbits > 0 && info->nackfrag.set.numbits <= DDSI_FRAGMENT_NUMBER_SET_MAX_BITS);
+  // 在消息中追加 NACKFRAG 数据
   nf = ddsi_xmsg_append (msg, &sm_marker, DDSI_NACKFRAG_SIZE (info->nackfrag.set.numbits));
 
+  // 初始化消息的子消息
   ddsi_xmsg_submsg_init (msg, sm_marker, DDSI_RTPS_SMID_NACK_FRAG);
+   // 设置 NACKFRAG 的相关字段
   nf->readerId = ddsi_hton_entityid (rwn->rd_guid.entityid);
   nf->writerId = ddsi_hton_entityid (pwr->e.guid.entityid);
   nf->writerSN = ddsi_to_seqno (info->nackfrag.seq);
@@ -162,17 +217,21 @@ static void add_NackFrag (struct ddsi_xmsg *msg, const struct ddsi_proxy_writer 
   nf->smhdr.flags |= info->flags;
 #endif
   // We use 0-based fragment numbers, but externally have to provide 1-based fragment numbers */
+  // 外部使用基于 1 的片段编号，但内部使用基于 0 的编号
   nf->fragmentNumberState.bitmap_base = info->nackfrag.set.bitmap_base + 1;
   nf->fragmentNumberState.numbits = info->nackfrag.set.numbits;
   memcpy (nf->bits, info->nackfrag.bits, DDSI_FRAGMENT_NUMBER_SET_BITS_SIZE (info->nackfrag.set.numbits));
 
   // Count field is at a variable offset ... silly DDSI spec
+  // 在消息中添加计数字段
   ddsi_count_t * const countp =
     (ddsi_count_t *) ((char *) nf + offsetof (ddsi_rtps_nackfrag_t, bits) + DDSI_FRAGMENT_NUMBER_SET_BITS_SIZE (nf->fragmentNumberState.numbits));
   *countp = pwr->nackfragcount;
 
+  // 设置消息的下一个子消息
   ddsi_xmsg_submsg_setnext (msg, sm_marker);
 
+  // 如果启用了日志追踪，输出 NACKFRAG 信息
   if (pwr->e.gv->logconfig.c.mask & DDS_LC_TRACE)
   {
     ETRACE (pwr, "nackfrag #%"PRIu32":%"PRIu64"/%"PRIu32"/%"PRIu32":",
@@ -182,10 +241,12 @@ static void add_NackFrag (struct ddsi_xmsg *msg, const struct ddsi_proxy_writer 
       ETRACE (pwr, "%c", ddsi_bitset_isset (nf->fragmentNumberState.numbits, nf->bits, ui) ? '1' : '0');
   }
 
+   // 在需要时对子消息进行编码
   // Encode the sub-message when needed
   ddsi_security_encode_datareader_submsg (msg, sm_marker, pwr, &rwn->rd_guid);
 }
 
+//这个函数负责构建 AckNack 子消息，其中包括读取者的标识、写入者的标识、读取者的序列号状态和缺失序列号的位图。这样，当消息传输到写入者时，写入者能够了解到读取者已经接收到哪些序列号的数据，以及读取者需要哪些序列号的数据。
 static void add_acknack (struct ddsi_xmsg *msg, const struct ddsi_proxy_writer *pwr, const struct ddsi_pwr_rd_match *rwn, const struct ddsi_add_acknack_info *info)
 {
   /* If pwr->have_seen_heartbeat == 0, no heartbeat has been received
@@ -193,31 +254,40 @@ static void add_acknack (struct ddsi_xmsg *msg, const struct ddsi_proxy_writer *
      AckNack.  NACKing data now will most likely cause another NACK
      upon reception of the first heartbeat, and so cause the data to
      be resent twice. */
+    // 如果 pwr->have_seen_heartbeat == 0，表示尚未接收到此代理写入者的心跳消息，因此会发送一个预先生成的 AckNack。
   ddsi_rtps_acknack_t *an;
   struct ddsi_xmsg_marker sm_marker;
 
+// 在消息中追加 AckNack 数据
   an = ddsi_xmsg_append (msg, &sm_marker, DDSI_ACKNACK_SIZE_MAX);
+  // 初始化消息的子消息
   ddsi_xmsg_submsg_init (msg, sm_marker, DDSI_RTPS_SMID_ACKNACK);
+  // 设置 AckNack 的相关字段
   an->readerId = ddsi_hton_entityid (rwn->rd_guid.entityid);
   an->writerId = ddsi_hton_entityid (pwr->e.guid.entityid);
 
   // set FINAL flag late, in case it is decided that the "response_required" flag
   // should be set depending on the exact AckNack/NackFrag generated
+  // 在消息的头部设置 FINAL 标志，以便在生成 AckNack/NackFrag 时可以根据需要设置 "response_required" 标志
   an->smhdr.flags |= DDSI_ACKNACK_FLAG_FINAL;
 #if ACK_REASON_IN_FLAGS
   an->smhdr.flags |= info->flags;
 #endif
+ // 设置读取者序列号状态和位图
   an->readerSNState = info->acknack.set;
   memcpy (an->bits, info->acknack.bits, DDSI_SEQUENCE_NUMBER_SET_BITS_SIZE (an->readerSNState.numbits));
 
   // Count field is at a variable offset ... silly DDSI spec
+    // 在消息中添加计数字段
   ddsi_count_t * const countp =
     (ddsi_count_t *) ((char *) an + offsetof (ddsi_rtps_acknack_t, bits) + DDSI_SEQUENCE_NUMBER_SET_BITS_SIZE (an->readerSNState.numbits));
   *countp = rwn->count;
   // Reset submessage size, now that we know the real size, and update the offset to the next submessage.
+  // 重新设置子消息的大小，因为现在我们知道了实际大小，并更新到下一个子消息的偏移
   ddsi_xmsg_shrink (msg, sm_marker, DDSI_ACKNACK_SIZE (an->readerSNState.numbits));
   ddsi_xmsg_submsg_setnext (msg, sm_marker);
 
+ // 如果启用了日志追踪，输出 AckNack 信息
   if (pwr->e.gv->logconfig.c.mask & DDS_LC_TRACE)
   {
     ETRACE (pwr, "acknack "PGUIDFMT" -> "PGUIDFMT": F#%"PRIu32":%"PRIu64"/%"PRIu32":",
@@ -228,6 +298,7 @@ static void add_acknack (struct ddsi_xmsg *msg, const struct ddsi_proxy_writer *
   }
 
   // Encode the sub-message when needed
+  // 在需要时对子消息进行编码
   ddsi_security_encode_datareader_submsg (msg, sm_marker, pwr, &rwn->rd_guid);
 }
 
@@ -238,11 +309,14 @@ static enum ddsi_add_acknack_result get_acknack_info (const struct ddsi_proxy_wr
      AckNack.  NACKing data now will most likely cause another NACK
      upon reception of the first heartbeat, and so cause the data to
      be resent twice. */
+      // 如果 pwr->have_seen_heartbeat == 0，表示尚未接收到此代理写入者的心跳消息，因此会发送一个预先生成的 AckNack。
   enum ddsi_add_acknack_result result;
 
 #if ACK_REASON_IN_FLAGS
   info->flags = 0;
 #endif
+// 初始化 AckNack 信息结构体，并生成序列号位图和 NACKFRAG 信息
+//调用 add_acknack_makebitmaps 函数生成 AckNack 的序列号位图和可能的 NACKFRAG 信息。
   if (!add_acknack_makebitmaps (pwr, rwn, info))
   {
     info->nack_sent_on_nackdelay = rwn->nack_sent_on_nackdelay;
@@ -252,6 +326,7 @@ static enum ddsi_add_acknack_result get_acknack_info (const struct ddsi_proxy_wr
     nack_summary->frag_end_p1 = 0;
     result = AANR_ACK;
   }
+   // 如果生成了 AckNack 信息，计算序列号和片段的范围，更新 nack_summary 结构体。
   else
   {
     // [seq_base:0 .. seq_end_p1:0) + [seq_end_p1:frag_base .. seq_end_p1:frag_end_p1) if frag_end_p1 > 0
@@ -270,6 +345,7 @@ static enum ddsi_add_acknack_result get_acknack_info (const struct ddsi_proxy_wr
        Who cares about an answer to an acknowledgment!? -- actually,
        that'd a very useful feature in combination with directed
        heartbeats, or somesuch, to get reliability guarantees. */
+        // 更新 nack_summary 结构体，记录序列号和片段的范围
     nack_summary->seq_end_p1 = seq_end_p1;
     nack_summary->frag_end_p1 = frag_end_p1;
     nack_summary->seq_base = seq_base;
@@ -333,6 +409,7 @@ static enum ddsi_add_acknack_result get_acknack_info (const struct ddsi_proxy_wr
   return result;
 }
 
+//根据一系列条件来决定是否要调度 ACKNACK 事件，以及何时调度.函数的执行流程受到 ACK 和 NACK 的延迟时间配置的影响，确保在适当的时间触发 ACKNACK 事件。
 void ddsi_sched_acknack_if_needed (struct ddsi_xevent *ev, struct ddsi_proxy_writer *pwr, struct ddsi_pwr_rd_match *rwn, ddsrt_mtime_t tnow, bool avoid_suppressed_nack)
 {
   // This is the relatively expensive and precise code to determine what the ACKNACK event will do,
@@ -359,12 +436,16 @@ void ddsi_sched_acknack_if_needed (struct ddsi_xevent *ev, struct ddsi_proxy_wri
   struct ddsi_add_acknack_info info;
   struct ddsi_last_nack_summary nack_summary;
   const enum ddsi_add_acknack_result aanr =
+  //使用 get_acknack_info 函数获取 ACKNACK 信息，并根据结果来决定后续的操作。
     get_acknack_info (pwr, rwn, &nack_summary, &info, ackdelay_passed, nackdelay_passed);
+    //如果结果是 AANR_SUPPRESSED_ACK，则什么都不做，因为此时没有必要执行后续操作。
   if (aanr == AANR_SUPPRESSED_ACK)
     ; // nothing to be done now
+    //如果需要避免抑制 NACK 且结果是 AANR_SUPPRESSED_NACK，则调度下一次事件的时间为上一次 NACK 时间加上 NACK 延迟时间。
   else if (avoid_suppressed_nack && aanr == AANR_SUPPRESSED_NACK)
     (void) ddsi_resched_xevent_if_earlier (ev, ddsrt_mtime_add_duration (rwn->t_last_nack, gv->config.nack_delay));
   else
+  //对于其他情况，调度下一次事件的时间为当前时间
     (void) ddsi_resched_xevent_if_earlier (ev, tnow);
 }
 
@@ -379,9 +460,10 @@ static struct ddsi_xmsg *make_and_resched_acknack (struct ddsi_xevent *ev, struc
     get_acknack_info (pwr, rwn, &nack_summary, &info,
                       tnow.v >= ddsrt_mtime_add_duration (rwn->t_last_ack, gv->config.ack_delay).v,
                       tnow.v >= ddsrt_mtime_add_duration (rwn->t_last_nack, gv->config.nack_delay).v);
-
+  //不需要ack
   if (aanr == AANR_SUPPRESSED_ACK)
     return NULL;
+    //如果避免发送被抑制的 NACK（avoid_suppressed_nack 为真且 aanr 为 AANR_SUPPRESSED_NACK），则将事件重新调度，并返回 NULL
   else if (avoid_suppressed_nack && aanr == AANR_SUPPRESSED_NACK)
   {
     (void) ddsi_resched_xevent_if_earlier (ev, ddsrt_mtime_add_duration (rwn->t_last_nack, gv->config.nack_delay));

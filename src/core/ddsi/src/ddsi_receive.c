@@ -695,7 +695,28 @@ struct ddsi_xmsg * ddsi_gap_info_create_gap(struct ddsi_writer *wr, struct ddsi_
 
   return m;
 }
+/*
+struct ddsi_xmsg *m：
 
+这是一个指向 ddsi_xmsg 结构体的指针。
+ddsi_xmsg 通常代表 DDS（Data Distribution Service）中的消息，可能包含要发送或接收的数据。
+struct ddsi_xeventq *evq：
+
+这是一个指向 ddsi_xeventq 结构体的指针。
+ddsi_xeventq 通常代表 DDS 中的事件队列，用于处理各种事件，包括定时事件、消息传递等。
+enum ddsi_hbcontrol_ack_required hbansreq：
+
+这是一个枚举类型 ddsi_hbcontrol_ack_required 的变量。
+枚举类型通常用于表示一组命名的整数常量。在这里，它表示某种心跳控制的确认要求。
+uint64_t wr_iid：
+
+这是一个 64 位无符号整数，表示写入（write）实例的标识符（ID）。
+uint64_t prd_iid：
+
+这是一个 64 位无符号整数，表示生产者（producer）实例的标识符（ID）。
+综合起来，这个结构体似乎用于在某个上下文中
+（可能是与 DDS 通信相关的异步事件处理等）存储一些状态信息。它可能用于推迟（defer）处理心跳消息，包括要处理的消息、相关的事件队列、心跳控制的确认要求，以及与实例标识相关的信息。
+*/
 struct defer_hb_state {
   struct ddsi_xmsg *m;
   struct ddsi_xeventq *evq;

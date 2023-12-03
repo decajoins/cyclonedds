@@ -1752,6 +1752,24 @@ static bool dds_rhc_default_store (struct ddsi_rhc * __restrict rhc_common, cons
     }
   }
 
+/*
+
+
+上面的代码块涉及DDS中的数据接收和处理，主要完成以下功能：
+
+根据样本的信息，判断实例是否接受样本，如果不接受，进行相应的处理。
+
+如果实例拒绝样本，仍然需要注册写入者，因为未注册会导致内存泄漏。此时，如果有数据或是释放操作，尝试注册实例，并根据实例的状态进行相应的处理，如设置无效样本等。
+
+如果实例接受样本，首先获取处理前的触发器信息。如果有数据或是释放操作，进行以下操作：
+
+尝试注册实例。
+更新实例的视图状态和释放状态。
+如果有数据，尝试将样本添加到实例的历史中。
+如果实例变为释放状态，并且没有最新数据或最新数据已被读取，则设置一个无效样本。
+更新实例的写者实体标识符和时间戳。
+根据实例的状态和操作的结果，更新相应的统计信息。
+*/
   //如果实例拒绝样本。
   else if (!inst_accepts_sample (rhc, inst, wrinfo, sample, has_data))
   {
@@ -1876,6 +1894,13 @@ static bool dds_rhc_default_store (struct ddsi_rhc * __restrict rhc_common, cons
       if (inst->latest || (bool) inst->isdisposed > old_isdisposed)
       {
         //如果实例在处理前是空的。
+        //inst->latest || (bool) inst->isdisposed > old_isdisposed 表示如果实例有最新数据或者在处理前变为释放状态，需要进行统计信息的更新。
+
+        // 如果实例在处理前是空的 (was_empty)，则调用 account_for_empty_to_nonempty_transition 函数更新统计信息。这可能意味着实例由空变为非空，需要相应地更新计数。
+
+        // 如果实例在处理前没有最新数据，且没有变为释放状态，那么确保实例是否为空与处理前是否为空相匹配。这是一种确保代码逻辑正确性的断言。
+
+        // 在任何情况下，都会根据实例的状态变化更新 rhc（Receiver History Cache）中的统计信息，如 n_not_alive_disposed 和 n_new，以便进一步处理。这些信息用于跟踪实例的状态变化情况。
         if (was_empty)
         //更新统计信息
           account_for_empty_to_nonempty_transition (rhc, inst);

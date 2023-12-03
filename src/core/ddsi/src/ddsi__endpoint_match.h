@@ -45,19 +45,24 @@ struct ddsi_setab {
 };
 #endif
 
+/*
+表示 Proxy Writer 和 Readers 之间匹配状态的枚举类型。
+包括 PRMSS_SYNC（与 Proxy Writer 同步）、PRMSS_TLCATCHUP（与 Proxy Writer 同步，但 Proxy Writer 和 Readers 仍在追赶历史数据）、PRMSS_OUT_OF_SYNC（与 Proxy Writer 不同步）
+*/
 enum ddsi_pwr_rd_match_syncstate {
   PRMSS_SYNC, /* in sync with proxy writer, has caught up with historical data */
   PRMSS_TLCATCHUP, /* in sync with proxy writer, pwr + readers still catching up on historical data */
   PRMSS_OUT_OF_SYNC /* not in sync with proxy writer */
 };
 
+//记录最后一次 NACK 的概要信息，包括最后一个请求重传的序列号范围和分片号范围。
 struct ddsi_last_nack_summary {
   ddsi_seqno_t seq_end_p1; /* last seq for which we requested a retransmit */
   ddsi_seqno_t seq_base;
   uint32_t frag_end_p1; /* last fragnum of seq_last_nack for which requested a retransmit */
   uint32_t frag_base;
 };
-
+//用于描述 Reader 和 Proxy Writer 之间的匹配状态。包括 Reader 关联的 GUID、Proxy Writer 是否存活等信息。
 struct ddsi_rd_pwr_match {
   ddsrt_avl_node_t avlnode;
   ddsi_guid_t pwr_guid;
@@ -72,11 +77,13 @@ struct ddsi_rd_pwr_match {
 #endif
 };
 
+//用于描述 Writer 和 Reader 之间的匹配状态。包括 Writer 关联的 GUID、Writer 是否存活等信息。
 struct ddsi_wr_rd_match {
   ddsrt_avl_node_t avlnode;
   ddsi_guid_t rd_guid;
 };
 
+//用于描述 Reader 和 Writer 之间的匹配状态。包括 Reader 是否存活、序列号范围等信息。
 struct ddsi_rd_wr_match {
   ddsrt_avl_node_t avlnode;
   ddsi_guid_t wr_guid;
@@ -84,6 +91,7 @@ struct ddsi_rd_wr_match {
   uint32_t wr_alive_vclock; /* used to ensure progress */
 };
 
+//用于描述 Writer 和 Proxy Reader 之间的匹配状态。包括是否可靠传输、最小序列号、最大序列号等信息。
 struct ddsi_wr_prd_match {
   ddsrt_avl_node_t avlnode;
   ddsi_guid_t prd_guid; /* guid of the proxy reader */
@@ -110,6 +118,7 @@ struct ddsi_wr_prd_match {
 #endif
 };
 
+//用于描述 Proxy Reader 和 Writer 之间的匹配状态。包括是否可靠传输、是否已回复心跳、最小序列号、最大序列号等信息。
 struct ddsi_prd_wr_match {
   ddsrt_avl_node_t avlnode;
   ddsi_guid_t wr_guid;
@@ -118,6 +127,8 @@ struct ddsi_prd_wr_match {
 #endif
 };
 
+//用于描述 Proxy Writer 和 Reader 之间的匹配状态。包括 Reader 关联的 GUID、最新的 ACKNACK 序列号、最新的心跳时间等信息。
+//还包括在不同状态下的一些标志和计数器，以及在不同状态下的具体信息，例如是否处于同步状态、是否请求 ACK、是否接收到心跳等。
 struct ddsi_pwr_rd_match {
   ddsrt_avl_node_t avlnode;
   ddsi_guid_t rd_guid;

@@ -1499,6 +1499,51 @@ void ddsi_defrag_notegap (struct ddsi_defrag *defrag, ddsi_seqno_t min, ddsi_seq
   defrag->max_sample = ddsrt_avl_find_max (&defrag_sampletree_treedef, &defrag->sampletree);
 }
 
+/**
+假设系统中有一个代理写者（proxy writer）发送的样本（sample），这个样本包含一个序列号（sequence number）为 100，每个分片（fragment）的大小为 32 字节，总共有 4 个分片。这个代理写者有一个关于分片信息的数据结构，其中记录了已经发送的分片。
+
+假设已发送的分片情况如下：
+
+分片 0 已发送
+分片 1 已发送
+分片 2 已发送
+分片 3 已发送
+调用 ddsi_defrag_nackmap 函数：
+
+如果我们调用 ddsi_defrag_nackmap 函数，传递的参数为序列号 100，maxfragnum 为 3（因为有 4 个分片，编号从 0 到 3）。
+函数会在内部查找代理写者的样本信息，发现分片 0、1、2、3 都已经发送。
+接着，函数会确定位图的起始和大小，这里位图的起始为 0，大小为 4（因为有 4 个分片）。
+然后，函数会生成 NACKMAP 位图，清空所有位，并设置缺失的分片对应的位。
+生成的 NACKMAP 位图：
+
+由于所有分片都已发送，NACKMAP 位图将全部被设置为 0，表示没有缺失的分片。
+返回结果：
+
+函数返回 DDSI_DEFRAG_NACKMAP_ALL_ADVERTISED_FRAGMENTS_KNOWN，表示所有广告的分片都已知，无需生成 NACKMAP。
+这是一个简化的例子，实际中会更加复杂，特别是在存在样本丢失或者乱序的情况下。这个函数的目的是在分片通信中帮助代理写者了解有哪些分片还未被接收到，从而生成相应的 NACKMAP 通知其他节点进行重传。
+*/
+
+/*
+查找样本信息：
+
+使用 ddsi_avl_lookup 函数查找具有给定序列号 seq 的样本信息。如果找不到，表示该样本尚未收到，可以根据调用者提供的 maxfragnum 生成相应的 NACKMAP。
+限制 maxfragnum：
+
+根据找到的样本的信息，限制 maxfragnum 以确保不超过样本的实际大小。如果 maxfragnum 大于样本的实际片段数，则将其限制为实际片段数减一。
+确定位图的起始和大小：
+
+通过查找 sampletree 中的第一个和最后一个片段的区间，确定位图的起始位置和大小。位图起始位置由第一个区间的 maxp1 分片位置决定，而位图的大小由与最后一个区间的 min 分片位置和 maxfragnum 的关系决定。
+生成位图：
+
+遍历所有区间，生成 NACKMAP 位图。清空位图，然后根据缺失的片段设置相应的位。
+返回结果：
+
+返回不同的结果表示不同的情况：
+DDSI_DEFRAG_NACKMAP_UNKNOWN_SAMPLE：如果调用者和解碎器都不了解关于样本的信息。
+DDSI_DEFRAG_NACKMAP_ALL_ADVERTISED_FRAGMENTS_KNOWN：如果所有广告的片段都已知，无需生成 NACKMAP。
+DDSI_DEFRAG_NACKMAP_FRAGMENTS_MISSING：如果生成了 NACKMAP，表示有一些片段是缺失的。
+总体而言，该函数的目的是根据分片数据的情况生成 NACKMAP，用于通知代理写入者有哪些片段是缺失的。
+*/
 enum ddsi_defrag_nackmap_result ddsi_defrag_nackmap (struct ddsi_defrag *defrag, ddsi_seqno_t seq, uint32_t maxfragnum, struct ddsi_fragment_number_set_header *map, uint32_t *mapbits, uint32_t maxsz)
 {
   struct ddsi_rsample *s;
