@@ -432,6 +432,7 @@ static void transmit_sample_unlocks_wr (struct ddsi_xpack *xp, struct ddsi_write
   assert((wr->heartbeat_xevent != NULL) == (whcst != NULL));
 
   sz = ddsi_serdata_size (serdata);
+  //如果样本的大小超过配置的分片大小（gv->config.fragment_size）或者不是新样本（isnew 为假）或者存在代理读者（prd != NULL）或者写者属于子消息保护模式（ddsi_omg_writer_is_submessage_protected 返回真），则需要进行分片处理。
   if (sz > gv->config.fragment_size || !isnew || prd != NULL || ddsi_omg_writer_is_submessage_protected (wr))
   {
     assert (wr->init_burst_size_limit <= UINT32_MAX - UINT16_MAX);
@@ -443,20 +444,22 @@ static void transmit_sample_unlocks_wr (struct ddsi_xpack *xp, struct ddsi_write
       nfrags_lim = nfrags; // if it fits or if there are best-effort readers, send it in its entirety
     else
       nfrags_lim = (max_burst_size + gv->config.fragment_size - 1) / gv->config.fragment_size;
-
+    //如果需要进行分片处理，则调用 transmit_sample_lgmsg_unlocks_wr 函数进行大消息传输（包含分片信息）。
     transmit_sample_lgmsg_unlocks_wr (xp, wr, seq, serdata, prd, isnew, nfrags, nfrags_lim);
   }
+  //否则，如果不需要分片，创建一个分片消息（fmsg），并通过 ddsi_xpack_addmsg 函数添加到消息包中。
   else
   {
     struct ddsi_xmsg *fmsg;
     if (ddsi_create_fragment_message_simple (wr, seq, serdata, &fmsg) >= 0)
       ddsi_xpack_addmsg (xp, fmsg, 0);
   }
-
+  //如果写者关联的心跳事件存在（wr->heartbeat_xevent），则调用 ddsi_writer_hbcontrol_piggyback 函数生成心跳消息。
   if (wr->heartbeat_xevent)
     hmsg = ddsi_writer_hbcontrol_piggyback (wr, whcst, serdata->twrite, ddsi_xpack_packetid (xp), &hbansreq);
   ddsrt_mutex_unlock (&wr->e.lock);
-
+  //如果存在心跳消息（hmsg），则通过 ddsi_xpack_addmsg 函数将其添加到消息包中。
+  //如果心跳控制请求的标志（hbansreq）表明需要立即发送（DDSI_HBC_ACK_REQ_YES_AND_FLUSH），则通过 ddsi_xpack_send 函数立即发送消息包。
   if(hmsg)
     ddsi_xpack_addmsg (xp, hmsg, 0);
   if (hbansreq >= DDSI_HBC_ACK_REQ_YES_AND_FLUSH)
@@ -827,6 +830,7 @@ static int write_sample (struct ddsi_thread_state * const thrst, struct ddsi_xpa
     goto drop;
   }
 
+//根据写者的配置，更新与活性（alive）和存活性（liveliness）相关的信息。如果存活性是手动配置的，会更新租约（lease）的存活时间。
   if (wr->xqos->liveliness.kind == DDS_LIVELINESS_MANUAL_BY_PARTICIPANT && ((lease = ddsrt_atomic_ldvoidp (&wr->c.pp->minl_man)) != NULL))
     ddsi_lease_renew (lease, ddsrt_time_elapsed());
   else if (wr->xqos->liveliness.kind == DDS_LIVELINESS_MANUAL_BY_TOPIC && wr->lease != NULL)
@@ -841,6 +845,7 @@ static int write_sample (struct ddsi_thread_state * const thrst, struct ddsi_xpa
   {
     struct ddsi_whc_state whcst;
     ddsi_whc_get_state(wr->whc, &whcst);
+    //如果写者关联的 WHC（Write History Cache）中的未确认字节数超过配置的上限（wr->whc_high），则进行阻塞或限流，确保 WHC 不会过载。这是通过 maybe_grow_whc 函数和 throttle_writer 函数来实现的。
     if (whcst.unacked_bytes > wr->whc_high)
     {
       dds_return_t ores;
@@ -863,7 +868,7 @@ static int write_sample (struct ddsi_thread_state * const thrst, struct ddsi_xpa
       }
     }
   }
-
+  //检查写者的状态，如果不处于操作状态（WRST_OPERATIONAL），则解锁并返回 DDS_RETCODE_PRECONDITION_NOT_MET 错误码。
   if (wr->state != WRST_OPERATIONAL)
   {
     r = DDS_RETCODE_PRECONDITION_NOT_MET;
@@ -872,9 +877,11 @@ static int write_sample (struct ddsi_thread_state * const thrst, struct ddsi_xpa
   }
 
   /* Always use the current monotonic time */
+  //获取当前的系统时间戳，并更新样本的写入时间戳（serdata->twrite）。
   tnow = ddsrt_time_monotonic ();
   serdata->twrite = tnow;
 
+  //为样本生成新的序列号（seq），并调用 insert_sample_in_whc 函数将样本插入写者的 WHC 中。
   seq = ++wr->seq;
   if ((r = insert_sample_in_whc (wr, seq, serdata, tk)) < 0)
   {
@@ -887,6 +894,7 @@ static int write_sample (struct ddsi_thread_state * const thrst, struct ddsi_xpa
     ddsi_writer_update_seq_xmit (wr, seq);
     ddsrt_mutex_unlock (&wr->e.lock);
   }
+  //如果写者没有网络目标（ddsi_addrset_empty(wr->as)），则只需更新序列号并解锁，避免进行网络传输。
   else if (ddsi_addrset_empty (wr->as))
   {
     /* No network destination, so no point in doing all the work involved
@@ -903,6 +911,8 @@ static int write_sample (struct ddsi_thread_state * const thrst, struct ddsi_xpa
     /* Note the subtlety of enqueueing with the lock held but
        transmitting without holding the lock. Still working on
        cleaning that up. */
+       //如果存在网络目标，则判断是通过 xp 参数传递的消息包进行传输，还是通过 transmit_sample_unlocks_wr 函数直接传输。如果是 SPDP（Simple Participant Discovery Protocol）写者，
+       //则调用相应的函数 ddsi_enqueue_spdp_sample_wrlock_held 进行传输。
     if (xp)
     {
       struct ddsi_whc_state whcst, *whcstptr;

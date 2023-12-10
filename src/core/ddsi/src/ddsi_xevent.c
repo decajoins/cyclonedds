@@ -847,7 +847,7 @@ struct ddsi_xevent *ddsi_qxev_callback (struct ddsi_xeventq *evq, ddsrt_mtime_t 
   assert (tsched.v != TSCHED_DELETE);
   struct ddsi_xevent *ev = ddsrt_malloc (sizeof (*ev) + arg_size);
   ev->evq = evq;
-  ev->tsched = tsched;
+  ev->tsched = tsched;//调度时间
   ev->cb.cb = cb;
   ev->sync_state = sync_on_delete ? CSODS_SCHEDULED : CSODS_NO_SYNC_NEEDED;
   if (arg_size) // so arg = NULL, arg_size = 0 is allowed

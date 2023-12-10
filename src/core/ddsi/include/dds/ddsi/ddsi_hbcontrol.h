@@ -36,6 +36,17 @@ struct ddsi_hbcontrol {
 };
 
 /// @brief Encoding for possible ways of adding heartbeats to messages
+/*
+这段代码定义了一个枚举类型 ddsi_hbcontrol_ack_required，该枚举用于表示心跳控制（Heartbeat Control）中的不同状态。具体来说，它表示心跳（Heartbeat）是否需要接收方的响应。
+
+DDSI_HBC_ACK_REQ_NO: 表示心跳不需要接收方的响应。这通常对应于在心跳中设置了 FINAL 标志，表示这是最后一个心跳，不需要接收方进行响应。
+
+DDSI_HBC_ACK_REQ_YES: 表示心跳需要接收方的响应，并且可以继续打包（packing）其他消息。这意味着发送方期望接收方响应，但不必立即发送下一个心跳。
+
+DDSI_HBC_ACK_REQ_YES_AND_FLUSH: 表示心跳需要接收方的响应，并且必须立即发送下一个心跳。这可能是因为发送方需要在一定时间内得到接收方的响应，因此需要立即发送下一个心跳。
+
+这些状态提供了一种对心跳发送和接收的控制机制，以确保在通信中的一致性和可靠性。
+*/
 enum ddsi_hbcontrol_ack_required {
   DDSI_HBC_ACK_REQ_NO,           ///< Heartbeat does not require a response (FINAL flag set)
   DDSI_HBC_ACK_REQ_YES,          ///< Heartbeat requires a response, may continue packing

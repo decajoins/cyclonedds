@@ -369,6 +369,26 @@ static void unref_builtin_types (struct dds_domain *dom)
   ddsi_sertype_unref (dom->builtin_writer_type);
 }
 
+/*
+这段代码是用于初始化DDS（Data Distribution Service）的内建（builtin）主题（topics）和相关的一些结构的函数。DDS是一种通信协议，用于在分布式系统中进行数据交换。
+
+让我们逐步解释这段代码：
+
+1. dds_qos_t *qos = dds__create_builtin_qos (); - 创建用于内建主题的QoS（Quality of Service）配置。
+2. 设置 dom 结构的 btif 成员，这是一个内建主题接口的结构，包括一些回调函数和其他成员。这些回调函数将被用于处理内建主题的不同方面，比如写入、是否是内建主题等等。
+3. 设置 dom->gv.builtin_topic_interface 为 &dom->btif，将内建主题接口与域（domain）相关联。
+4. 获取内建主题的类型名，并通过调用 dds_new_sertype_builtintopic 和 dds_new_sertype_builtintopic_topic 创建内建主题的类型。
+5. 注册这些内建主题的类型到全局的 dom->gv 结构中。
+6. 唤醒等待中的线程，以便使新的内建主题类型可用。
+7. 通过调用 ddsi_new_local_orphan_writer 创建内建主题的写者（writer），这些写者用于发布内建主题的信息。这包括参与者（Participant）、主题（Topic）、发布者（Publisher）和订阅者（Subscriber）。
+8. 将新创建的写者与相关的内建主题相关联，例如，DDS_BUILTIN_TOPIC_PARTICIPANT_NAME 对应参与者主题。
+9. 通过调用 ddsi_thread_state_asleep 将线程置为休眠状态，以确保在内建主题写者创建后，不再有其他线程在访问。
+10. 释放用于内建主题的QoS配置，调用 dds_delete_qos(qos)。
+11. unref_builtin_types(dom) - 这个函数用于减少内建主题类型的引用计数，因为在之前的注册和初始化步骤中，已经为这些类型增加了引用计数。
+
+总体而言，这段代码完成了DDS域的内建主题的初始化工作，包括创建内建主题类型、注册类型、创建内建主题的写者，并处理一些与内建主题相关的回调函数。这些内建主题通常用于DDS的元数据交换，例如，用于描述发布者、订阅者、主题等信息
+
+*/
 void dds__builtin_init (struct dds_domain *dom)
 {
   dds_qos_t *qos = dds__create_builtin_qos ();

@@ -907,6 +907,48 @@ static void ddsi_new_writer_guid_common_init (struct ddsi_writer *wr, const char
   ddsi_local_reader_ary_init (&wr->rdary);
 }
 
+/*
+
+这是一个函数，用于创建新的DDS写入者（DataWriter）。下面是该函数的主要步骤和功能：
+
+参数验证：
+
+函数首先进行了一系列断言，以确保传入的GUID是写入者的GUID，并且确保该GUID没有被注册到实体索引中，同时保证GUID的前缀与参与者的GUID前缀相匹配。
+共同初始化：
+
+调用 new_reader_writer_common 函数进行一些通用的初始化工作，包括初始化读写器的日志配置、主题名、类型名以及QoS。
+分配内存：
+
+使用 ddsrt_malloc 分配了一个 struct ddsi_writer 结构体的内存，并将其初始化。
+实体初始化：
+
+调用 endpoint_common_init 进行端点的通用初始化，设置写入者的各种属性，如类型、主题名、QoS等。
+安全性注册：
+
+如果支持安全性，调用 ddsi_omg_security_register_writer 来注册写入者。
+实体索引插入：
+
+使用实体索引的互斥锁，将写入者插入实体索引中，以便进行协议处理。
+发送内置主题消息：
+
+调用 ddsi_builtintopic_write_endpoint 向内置主题写入端点的实例写入写入者的信息。
+与代理读者匹配：
+
+调用 ddsi_match_writer_with_proxy_readers 将写入者与代理读者进行匹配，并向代理读者发送相关信息。
+与本地读者匹配：
+
+调用 ddsi_match_writer_with_local_readers 将写入者与本地读者进行匹配，并向本地读者发送相关信息。
+写入SEDPS主题：
+
+调用 ddsi_sedp_write_writer 向SEDPS（Simple Endpoint Discovery Protocol Server）主题写入写入者信息。
+处理租约（Lease）：
+
+如果写入者具有租约（lease），则根据租约的配置进行相应处理。如果是自动存活性（automatic liveliness），则将租约信息插入到参与者的自动存活性租约堆中，以触发PMD（Participant Message Data）更新。如果是手动存活性（manual liveliness），则创建租约并将其注册。
+返回结果：
+
+返回 0 表示成功。
+这个函数的主要目的是在DDS系统中注册一个新的写入者，并确保相关的信息和事件被正确地传播到系统中的其他实体。
+*/
 dds_return_t ddsi_new_writer_guid (struct ddsi_writer **wr_out, const struct ddsi_guid *guid, const struct ddsi_guid *group_guid, struct ddsi_participant *pp, const char *topic_name, const struct ddsi_sertype *type, const struct dds_qos *xqos, struct ddsi_whc *whc, ddsi_status_cb_t status_cb, void *status_entity)
 {
   struct ddsi_writer *wr;

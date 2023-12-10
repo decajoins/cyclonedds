@@ -304,6 +304,71 @@ static void disconnect_participant_secure (struct ddsi_participant *pp)
 }
 #endif /* DDS_HAS_SECURITY */
 
+/*
+这个函数的目的是在 DDS 中为给定的 Participant 添加与内置终端点相关的写入者和读者。这些内置终端点通常用于数据发现和管理，以支持DDS中的分布式系统通信。
+
+内置写入者（Built-in Writers）：
+SEDPS订阅写入者（Sedp Subscriptions Writer）
+
+EntityID: DDSI_ENTITYID_SEDP_BUILTIN_SUBSCRIPTIONS_WRITER
+相关主题: DDS_BUILTIN_TOPIC_SUBSCRIPTION_NAME
+SEDPS发布写入者（Sedp Publications Writer）
+
+EntityID: DDSI_ENTITYID_SEDP_BUILTIN_PUBLICATIONS_WRITER
+相关主题: DDS_BUILTIN_TOPIC_PUBLICATION_NAME
+PMD写入者（Participant Message Data Writer）
+
+EntityID: DDSI_ENTITYID_P2P_BUILTIN_PARTICIPANT_MESSAGE_WRITER
+相关主题: DDS_BUILTIN_TOPIC_PARTICIPANT_MESSAGE_NAME
+(可选) SEDP主题写入者（Sedp Topic Writer）
+
+EntityID: DDSI_ENTITYID_SEDP_BUILTIN_TOPIC_WRITER
+相关主题: DDS_BUILTIN_TOPIC_TOPIC_NAME（若启用主题发现）
+(可选) TypeLookup服务请求写入者（TypeLookup Service Request Writer）
+
+EntityID: DDSI_ENTITYID_TL_SVC_BUILTIN_REQUEST_WRITER
+相关主题: DDS_BUILTIN_TOPIC_TYPELOOKUP_REQUEST_NAME（若启用类型发现）
+(可选) TypeLookup服务回复写入者（TypeLookup Service Reply Writer）
+
+EntityID: DDSI_ENTITYID_TL_SVC_BUILTIN_REPLY_WRITER
+相关主题: DDS_BUILTIN_TOPIC_TYPELOOKUP_REPLY_NAME（若启用类型发现）
+内置读者（Built-in Readers）：
+SPDP参与者读者（SPDP Participant Reader）
+
+EntityID: DDSI_ENTITYID_SPDP_BUILTIN_PARTICIPANT_READER
+相关主题: DDS_BUILTIN_TOPIC_PARTICIPANT_NAME
+SEDPS订阅读者（Sedp Subscriptions Reader）
+
+EntityID: DDSI_ENTITYID_SEDP_BUILTIN_SUBSCRIPTIONS_READER
+相关主题: DDS_BUILTIN_TOPIC_SUBSCRIPTION_NAME
+SEDPS发布读者（Sedp Publications Reader）
+
+EntityID: DDSI_ENTITYID_SEDP_BUILTIN_PUBLICATIONS_READER
+相关主题: DDS_BUILTIN_TOPIC_PUBLICATION_NAME
+PMD读者（Participant Message Data Reader）
+
+EntityID: DDSI_ENTITYID_P2P_BUILTIN_PARTICIPANT_MESSAGE_READER
+相关主题: DDS_BUILTIN_TOPIC_PARTICIPANT_MESSAGE_NAME
+(可选) SEDP主题读者（Sedp Topic Reader）
+
+EntityID: DDSI_ENTITYID_SEDP_BUILTIN_TOPIC_READER
+相关主题: DDS_BUILTIN_TOPIC_TOPIC_NAME（若启用主题发现）
+(可选) TypeLookup服务请求读者（TypeLookup Service Request Reader）
+
+EntityID: DDSI_ENTITYID_TL_SVC_BUILTIN_REQUEST_READER
+相关主题: DDS_BUILTIN_TOPIC_TYPELOOKUP_REQUEST_NAME（若启用类型发现）
+(可选) TypeLookup服务回复读者（TypeLookup Service Reply Reader）
+
+EntityID: DDSI_ENTITYID_TL_SVC_BUILTIN_REPLY_READER
+相关主题: DDS_BUILTIN_TOPIC_TYPELOOKUP_REPLY_NAME（若启用类型发现）
+以上内置终端点用于支持DDS中的分布式系统通信，包括数据发现、主题信息交换以及参与者之间的消息传递。
+
+
+
+
+
+
+*/
 static void add_builtin_endpoints (struct ddsi_participant *pp, ddsi_guid_t *subguid, const ddsi_guid_t *group_guid, struct ddsi_domaingv *gv, bool add_writers, bool add_readers)
 {
   if (add_writers)

@@ -452,10 +452,14 @@ void ddsi_sched_acknack_if_needed (struct ddsi_xevent *ev, struct ddsi_proxy_wri
 static struct ddsi_xmsg *make_and_resched_acknack (struct ddsi_xevent *ev, struct ddsi_proxy_writer *pwr, struct ddsi_pwr_rd_match *rwn, ddsrt_mtime_t tnow, bool avoid_suppressed_nack)
 {
   struct ddsi_domaingv * const gv = pwr->e.gv;
+  //存储生成的 ACKNACK 消息的指针。
   struct ddsi_xmsg *msg;
+  //存储 ACKNACK 信息的结构体 (struct ddsi_add_acknack_info)
   struct ddsi_add_acknack_info info;
 
+  // 存储上一次 NACK 摘要信息的结构体 (struct ddsi_last_nack_summary)。
   struct ddsi_last_nack_summary nack_summary;
+  //通过调用 get_acknack_info 函数获取的 enum ddsi_add_acknack_result 类型的结果
   const enum ddsi_add_acknack_result aanr =
     get_acknack_info (pwr, rwn, &nack_summary, &info,
                       tnow.v >= ddsrt_mtime_add_duration (rwn->t_last_ack, gv->config.ack_delay).v,
@@ -469,6 +473,7 @@ static struct ddsi_xmsg *make_and_resched_acknack (struct ddsi_xevent *ev, struc
     (void) ddsi_resched_xevent_if_earlier (ev, ddsrt_mtime_add_duration (rwn->t_last_nack, gv->config.nack_delay));
     return NULL;
   }
+  //如果既没有收到 HEARTBEAT 也没有收到 HEARTBEATFRAG，且 aanr 不是 AANR_ACK，则返回 NULL。这是按照规范不允许发送 ACKNACK 的情况，但在某些情况下，可能会从规范中偏离以恢复由于不对称断开引起的数据包丢失。
   else if (!(rwn->heartbeat_since_ack || rwn->heartbeatfrag_since_ack))
   {
     // Not really allowed to send an ACKNACK by the spec, except we do it sometimes to recover
@@ -499,11 +504,13 @@ static struct ddsi_xmsg *make_and_resched_acknack (struct ddsi_xevent *ev, struc
   // possibility of not sending a message, but that is only in case of failures of some sort.
   // Resetting the flags and bailing out simply means we will wait until the next heartbeat to
   // do try again.
+  //重置状态标志，包括 directed_heartbeat，heartbeat_since_ack，heartbeatfrag_since_ack，nack_sent_on_nackdelay
   rwn->directed_heartbeat = 0;
   rwn->heartbeat_since_ack = 0;
   rwn->heartbeatfrag_since_ack = 0;
   rwn->nack_sent_on_nackdelay = (info.nack_sent_on_nackdelay ? 1 : 0);
 
+//获取相关的参与者信息（如果代理写入者启用了安全特性)
   struct ddsi_participant *pp = NULL;
   if (ddsi_omg_proxy_participant_is_secure (pwr->c.proxypp))
   {
@@ -512,12 +519,14 @@ static struct ddsi_xmsg *make_and_resched_acknack (struct ddsi_xevent *ev, struc
       pp = rd->c.pp;
   }
 
+//创建一个新的 ACKNACK 消息 (msg)，其中消息的大小限制为 DDSI_ACKNACK_SIZE_MAX，类型为 DDSI_XMSG_KIND_CONTROL
   if ((msg = ddsi_xmsg_new (gv->xmsgpool, &rwn->rd_guid, pp, DDSI_ACKNACK_SIZE_MAX, DDSI_XMSG_KIND_CONTROL)) == NULL)
   {
     return NULL;
   }
 
   ddsi_xmsg_setdst_pwr (msg, pwr);
+  //如果启用了 HB->ACK 的延迟测量 (meas_hb_to_ack_latency)，并且存在 HEARTBEAT 的时间戳，则将时间戳添加到消息中。
   if (gv->config.meas_hb_to_ack_latency && rwn->hb_timestamp.v)
   {
     // If HB->ACK latency measurement is enabled, and we have a
@@ -529,14 +538,17 @@ static struct ddsi_xmsg *make_and_resched_acknack (struct ddsi_xevent *ev, struc
     rwn->hb_timestamp.v = 0;
   }
 
+  //调用 add_acknack 函数生成 ACKNACK 消息。
   if (aanr != AANR_NACKFRAG_ONLY)
     add_acknack (msg, pwr, rwn, &info);
   if (info.nackfrag.seq > 0)
   {
     ETRACE (pwr, " + ");
+    //如果包含 NACKFRAG 信息，调用 add_NackFrag 函数生成 NACKFRAG 消息
     add_NackFrag (msg, pwr, rwn, &info);
   }
   ETRACE (pwr, "\n");
+  //如果生成的消息大小为零，表示尝试编码消息时出现问题，释放消息并返回 NULL。
   if (ddsi_xmsg_size (msg) == 0)
   {
     // attempt at encoding the message caused it to be dropped
@@ -544,18 +556,22 @@ static struct ddsi_xmsg *make_and_resched_acknack (struct ddsi_xevent *ev, struc
     return NULL;
   }
 
+//更新 rwn 的计数。
   rwn->count++;
+  //根据结果更新状态和调度下一个事件,根据 aanr 的值，更新 rwn 的状态和计数。
   switch (aanr)
   {
     case AANR_SUPPRESSED_ACK:
       // no message: caught by the size = 0 check
       assert (0);
       break;
+          //如果是 AANR_ACK，重置 ack_requested，更新 t_last_ack，并更新 last_nack.seq_base。
     case AANR_ACK:
       rwn->ack_requested = 0;
       rwn->t_last_ack = tnow;
       rwn->last_nack.seq_base = nack_summary.seq_base;
       break;
+      //如果是 AANR_NACK 或 AANR_NACKFRAG_ONLY，更新相应的状态，以及 last_nack 和 t_last_nack，并在一些条件下自动调度下一个 NACK 事件。
     case AANR_NACK:
     case AANR_NACKFRAG_ONLY:
       if (nack_summary.frag_end_p1 != 0)
@@ -575,13 +591,16 @@ static struct ddsi_xmsg *make_and_resched_acknack (struct ddsi_xevent *ev, struc
       (void) ddsi_resched_xevent_if_earlier (ev, ddsrt_mtime_add_duration (tnow, gv->config.auto_resched_nack_delay));
       break;
     case AANR_SUPPRESSED_NACK:
+    //如果是 AANR_SUPPRESSED_NACK，重置 ack_requested，更新 t_last_ack，并重新调度下一个 NACK 事件
       rwn->ack_requested = 0;
       rwn->t_last_ack = tnow;
       rwn->last_nack.seq_base = nack_summary.seq_base;
       (void) ddsi_resched_xevent_if_earlier (ev, ddsrt_mtime_add_duration (rwn->t_last_nack, gv->config.nack_delay));
       break;
   }
+  //输出跟踪日志，表示已发送 ACKNACK。
   GVTRACE ("send acknack(rd "PGUIDFMT" -> pwr "PGUIDFMT")\n", PGUID (rwn->rd_guid), PGUID (pwr->e.guid));
+  //返回生成的 ACKNACK 消息 (msg)。如果没有生成消息，返回 NULL。
   return msg;
 }
 
@@ -654,6 +673,19 @@ static struct ddsi_xmsg *make_preemptive_acknack (struct ddsi_xevent *ev, struct
   return msg;
 }
 
+/*
+make_preemptive_acknack 和 make_and_resched_acknack 都是用于创建并调度 ACKNACK 消息的函数，但它们的调用场景和目的略有不同。
+
+make_preemptive_acknack:
+
+调用场景： 该函数用于在尚未收到来自 Proxy Writer 的心跳（Heartbeat）之前主动创建并发送 ACKNACK 消息。这通常发生在 Proxy Writer 尚未启动或在短时间内未发送心跳的情况下，Reader 通过主动发送 ACKNACK 来请求未接收到的数据。
+目的： 为了尽早地获取尚未接收的数据，Reader 在没有明确的心跳信息的情况下采取主动措施。
+make_and_resched_acknack:
+
+调用场景： 该函数用于在收到 Proxy Writer 的心跳后创建并调度 ACKNACK 消息。这是在正常的数据传输过程中，Reader 响应 Proxy Writer 的心跳，通知它已经接收到哪些数据。
+目的： 为了维护数据的一致性，Reader 根据接收到的心跳信息定期发送 ACKNACK，以告知 Proxy Writer 关于数据的接收情况。
+在总体设计中，make_preemptive_acknack 用于主动请求数据，而 make_and_resched_acknack 用于响应来自 Proxy Writer 的心跳。这两者共同确保了数据的及时传输和一致性。
+*/
 void ddsi_acknack_xevent_cb (struct ddsi_domaingv *gv, struct ddsi_xevent *ev, struct ddsi_xpack *xp, void *varg, ddsrt_mtime_t tnow)
 {
   /* FIXME: ought to keep track of which NACKs are being generated in

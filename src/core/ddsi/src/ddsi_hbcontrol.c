@@ -520,6 +520,39 @@ static void send_heartbeat_to_all_readers (struct ddsi_xpack *xp, struct ddsi_xe
 }
 #endif
 
+/*
+
+这是一个 DDS（Data Distribution Service）中用于处理心跳（heartbeat）事件的回调函数。下面是函数的主要逻辑和功能：
+
+获取写者（writer）实体：
+
+通过写者的 GUID 从实体索引中查找写者实体。如果写者实体不存在，说明写者已经被删除，直接返回。
+处理可靠性机制：
+
+确保写者是可靠的。如果写者不可靠，就没有心跳机制的需求。
+获取写者的状态：
+
+使用写者的 WHC（Writer History Cache）状态来检查是否需要发送心跳消息。
+判断是否需要发送心跳：
+
+如果不需要发送心跳，设置 ACK 请求标志，并根据需要记录相关的调试信息。不发送心跳的情况包括：不需要定期发送、写者被禁用等。
+创建心跳消息：
+
+如果需要发送心跳，根据写者的状态信息创建心跳消息。设置心跳的时间戳和相应的 ACK 请求标志。
+记录调试信息：
+
+记录相关的调试信息，包括是否发送了心跳、下一次心跳的调度时间等。
+重新调度心跳事件：
+
+使用 ddsi_resched_xevent_if_earlier 函数，将心跳事件重新调度到下一次心跳时间。
+释放写者锁：
+
+释放写者锁，允许其他线程访问写者。
+添加心跳消息到 XP（Xport）：
+
+如果创建了心跳消息，将其添加到 XP 中。在添加消息时，如果测试模式中设置了 test_suppress_heartbeat 标志，则不真正发送心跳，而是打印一条调试信息。
+总体而言，这个函数的目的是处理写者的心跳事件，根据写者的状态和配置情况，决定是否发送心跳消息，并在需要时将心跳消息添加到 XP 中。这是 DDS 中实现可靠通信的一部分，用于确保数据通信的可靠性和实时性。
+*/
 void ddsi_heartbeat_xevent_cb (struct ddsi_domaingv *gv, struct ddsi_xevent *ev, struct ddsi_xpack *xp, void *varg, ddsrt_mtime_t tnow)
 {
   struct ddsi_heartbeat_xevent_cb_arg const * const arg = varg;
@@ -565,6 +598,18 @@ void ddsi_heartbeat_xevent_cb (struct ddsi_domaingv *gv, struct ddsi_xevent *ev,
     t_next.v = tnow.v + ddsi_writer_hbcontrol_intv (wr, &whcst, tnow);
   }
 
+  /*
+  
+这段代码是在检查写者（wr）关联的读者（readers）是否为空。让我们逐步解释这段代码：
+
+ddsrt_avl_is_empty 是一个函数调用，用于检查 AVL 树（一种自平衡二叉搜索树）是否为空。在这里，AVL 树用于管理与写者相关联的读者。
+
+&wr->readers 是获取写者结构体中读者 AVL 树的地址。
+
+所以，ddsrt_avl_is_empty (&wr->readers) 表示检查写者结构体中的读者 AVL 树是否为空。
+
+在这个上下文中，如果 AVL 树为空，意味着写者当前没有任何关联的读者。这可能表示没有其他实体订阅该写者的数据。在心跳机制的逻辑中，如果没有关联的读者，可能会采取不同的策略，例如减少发送心跳的频率等。
+  */
   if (ddsrt_avl_is_empty (&wr->readers))
   {
     GVTRACE ("heartbeat(wr "PGUIDFMT"%s) %s, resched in %g s (min-ack [none], avail-seq %"PRIu64", xmit %"PRIu64")\n",
