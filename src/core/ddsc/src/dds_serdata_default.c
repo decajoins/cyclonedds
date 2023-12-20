@@ -515,6 +515,21 @@ static void istream_from_serdata_default (dds_istream_t * __restrict s, const st
   s->m_xcdr_version = ddsi_sertype_enc_id_xcdr_version (d->hdr.identifier);
 }
 
+/**
+ * 
+这是一个用于初始化 dds_ostream_t 结构的函数，该结构用于将序列化数据写入输出流。以下是对该函数的解释：
+
+s: 指向 dds_ostream_t 结构的指针，表示输出流对象。
+d: 指向 ddsi_serdata_default 结构的指针，表示序列化数据对象。
+该函数通过以下步骤完成初始化：
+
+将输出流对象的 m_buffer 成员指向序列化数据对象 d 的起始地址。
+将输出流对象的 m_index 成员设置为序列化数据对象中 data 成员的偏移量。data 成员是实际的序列化数据的起始地址。
+将输出流对象的 m_size 成员设置为序列化数据对象的大小（size 成员）加上 m_index 的值。这表示输出流的大小为序列化数据的大小。
+根据序列化数据对象的 hdr.identifier 字段的字节序（Little Endian 或 Big Endian），在小端序系统中，该字段的值应为小端序（LE），在大端序系统中，该字段的值应为大端序（BE）。
+将输出流对象的 m_xcdr_version 成员设置为序列化数据对象的 hdr.identifier 字段中表示 XCDR 版本的部分。
+最终，该函数初始化了输出流对象，使其准备好接收序列化数据。
+*/
 static void ostream_from_serdata_default (dds_ostream_t * __restrict s, const struct dds_serdata_default * __restrict d)
 {
   s->m_buffer = (unsigned char *) d;
@@ -528,6 +543,22 @@ static void ostream_from_serdata_default (dds_ostream_t * __restrict s, const st
   s->m_xcdr_version = ddsi_sertype_enc_id_xcdr_version (d->hdr.identifier);
 }
 
+/*
+
+这个函数的目的是将 dds_ostream_t 结构中的序列化数据添加到 ddsi_serdata_default 结构中。以下是对该函数的解释：
+
+s: 指向 dds_ostream_t 结构的指针，表示输出流对象。
+d: 指向 ddsi_serdata_default 结构指针的指针，用于存储输出流对象的序列化数据。
+该函数执行以下步骤：
+
+调用 dds_cdr_alignto_clear_and_resize 函数，将序列化数据的大小舍入到指定的对齐值，并返回填充的字节数。
+检查填充的字节数是否小于等于3，如果不是，触发 assert 异常。这是因为 DDSI 要求序列化数据的对齐是4字节，填充的字节数应在0到3之间。
+将 dds_ostream_t 结构中的 m_buffer 字段的地址赋值给 (*d)，即 ddsi_serdata_default 结构的指针。
+计算 pos 字段的值，表示序列化数据的起始位置相对于 ddsi_serdata_default 结构中 data 成员的偏移量。
+计算 size 字段的值，表示序列化数据的大小。
+将填充的字节数（pad）存储在 hdr.options 字段中，并使用大端字节序表示。
+最终，这个函数更新了 ddsi_serdata_default 结构的字段，将 dds_ostream_t 中的序列化数据添加到其中。
+*/
 static void ostream_add_to_serdata_default (dds_ostream_t * __restrict s, struct dds_serdata_default ** __restrict d)
 {
   /* DDSI requires 4 byte alignment */
@@ -541,7 +572,25 @@ static void ostream_add_to_serdata_default (dds_ostream_t * __restrict s, struct
   (*d)->hdr.options = ddsrt_toBE2u ((uint16_t) pad);
 }
 
+/**
+ * 
+ * 
+这是一个用于创建默认序列化数据对象的函数，具体来说，是创建 ddsi_serdata_default 对象的函数。以下是对该函数的解释：
 
+tpcmn: 一个指向 ddsi_sertype 结构的指针，表示数据类型的通用信息。
+kind: 一个枚举值，表示序列化数据对象的类型，可能是 SDK_EMPTY、SDK_KEY 或 SDK_DATA。
+xcdr_version: 一个整数，表示 XCDR 版本，可以是 CDR_ENC_VERSION_1 或 CDR_ENC_VERSION_2。
+sample: 指向样本数据的指针。
+该函数首先将通用的数据类型指针 tpcmn 转换为特定的默认数据类型指针 tp。接着，通过调用 serdata_default_new 函数创建了一个新的 ddsi_serdata_default 对象，
+并将其赋值给指针 d。如果创建失败（即返回值为 NULL），则直接返回 NULL。
+
+然后，通过 dds_ostream_t 结构将序列化数据对象 d 和数据类型指针 tp 关联起来。根据 kind 的不同，执行相应的序列化操作：
+
+对于 SDK_EMPTY 类型，直接将数据添加到序列化数据对象。
+对于 SDK_KEY 类型，通过 dds_stream_write_key 函数将键写入数据流，然后将数据添加到序列化数据对象。如果 XCDR 版本为 2，进行额外的处理以满足 XCDR2 的要求。
+对于 SDK_DATA 类型，通过 dds_stream_write_sample 函数将样本写入数据流，然后将数据添加到序列化数据对象，并通过 gen_serdata_key_from_sample 函数生成相应的键。
+最终，该函数返回指向新创建的 ddsi_serdata_default 对象的指针。
+*/
 static struct dds_serdata_default *serdata_default_from_sample_cdr_common (const struct ddsi_sertype *tpcmn, enum ddsi_serdata_kind kind, uint32_t xcdr_version, const void *sample)
 {
   const struct dds_sertype_default *tp = (const struct dds_sertype_default *)tpcmn;
@@ -604,6 +653,10 @@ error:
   return NULL;
 }
 
+/*
+该函数首先确保 data_representation 的值为 DDS_DATA_REPRESENTATION_XCDR1 或 DDS_DATA_REPRESENTATION_XCDR2，
+然后根据指定的数据表示形式创建一个默认的序列化数据对象 ddsi_serdata_default。接着，如果 key 为 true，则调用 fix_serdata_default 函数为键修复序列化数据对象，否则调用 fix_serdata_default_nokey 函数。
+*/
 static struct ddsi_serdata *serdata_default_from_sample_data_representation (const struct ddsi_sertype *tpcmn, enum ddsi_serdata_kind kind, dds_data_representation_id_t data_representation, const void *sample, bool key)
 {
   assert (data_representation == DDS_DATA_REPRESENTATION_XCDR1 || data_representation == DDS_DATA_REPRESENTATION_XCDR2);

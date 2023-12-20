@@ -1198,11 +1198,15 @@ static void ddsi_xpack_send_real (struct ddsi_xpack *xp)
   }
 
   GVTRACE (" [");
+  //如果 dstmode 为 NN_XMSG_DST_ONE，表示消息只有一个目标地址，那么调用 ddsi_xpack_send1 函数发送消息给该地址。此时，calls 被设置为 1，表示调用一次发送函数。
   if (xp->dstmode == NN_XMSG_DST_ONE)
   {
     calls = 1;
     (void) ddsi_xpack_send1 (&xp->dstaddr.loc, xp);
   }
+  //如果 dstmode 不为 NN_XMSG_DST_ONE，表示消息有多个目标地址，
+  //那么将消息发送给所有地址。在这里，通过 ddsi_addrset_forall_count 函数遍历所有地址，并调用 ddsi_xpack_send1v 函数发送消息。
+  //然后，通过 ddsi_unref_addrset 函数释放地址集的引用。calls 被设置为 ddsi_addrset_forall_count 的返回值，表示调用发送函数的次数。
   else
   {
     /* Send to all addresses in as - as ultimately references the writer's

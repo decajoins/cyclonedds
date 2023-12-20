@@ -1844,13 +1844,18 @@ DDS_HAS_SECURITY：
      automatically. */
   for (int i = 0; i < gv->n_interfaces; i++)
   {
+    //在每次迭代中，检查当前接口是否不支持组播且配置中未指定对等点（peers）。这里使用 !gv->interfaces[i].mc_capable 来检查接口是否不支持组播，而 gv->config.peers == NULL 用于检查是否未配置对等点。
     if (!gv->interfaces[i].mc_capable && gv->config.peers == NULL)
     {
       struct ddsi_config_peer_listelem peer_local;
+    //定义了一个字符数组 local_addr，用于存储当前接口的本地地址信息。
       char local_addr[DDSI_LOCSTRLEN];
+      //将当前接口的地址信息（不包括端口）转换为字符串，并存储在 local_addr 中。
       ddsi_locator_to_string_no_port (local_addr, sizeof (local_addr), &gv->interfaces[i].loc);
+      //设置 peer_local 结构体的成员，将 next 设置为 NULL，将 peer 设置为当前接口的本地地址字符串。
       peer_local.next = NULL;
       peer_local.peer = local_addr;
+      //将 peer_local 结构体作为参数传递给该函数。该函数的目的是将添对等点的地址加到地址集合中。
       add_peer_addresses (gv, gv->as_disc, &peer_local);
     }
   }

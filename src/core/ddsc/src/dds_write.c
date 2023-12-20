@@ -159,21 +159,35 @@ static dds_return_t local_on_delivery_failure_fastpath (struct ddsi_entity_commo
 
 static dds_return_t deliver_locally (struct ddsi_writer *wr, struct ddsi_serdata *payload, struct ddsi_tkmap_instance *tk)
 {
+  /*
+  定义并初始化 deliver_locally_ops 结构体：deliver_locally_ops 是一个结构体，其中包含了一系列函数指针，用于执行本地交付的不同操作。这些函数指针包括：
+  makesample：用于创建数据样本。
+  first_reader 和 next_reader：用于迭代同步的读者。
+  on_failure_fastpath：在交付失败的情况下执行的快速路径处理。
+    */
   static const struct ddsi_deliver_locally_ops deliver_locally_ops = {
     .makesample = local_make_sample,
     .first_reader = ddsi_writer_first_in_sync_reader,
     .next_reader = ddsi_writer_next_in_sync_reader,
     .on_failure_fastpath = local_on_delivery_failure_fastpath
   };
+  /*
+  初始化 sourceinfo 结构体：
+  sourceinfo 结构体包含了有关数据来源的信息，
+  其中包括写入者类型、数据负载、实例信息、超时等。
+
+  */
   struct local_sourceinfo sourceinfo = {
     .src_type = wr->type,
     .src_payload = payload,
     .src_tk = tk,
     .timeout = { 0 },
   };
+  //创建写入者信息 wrinfo：通过调用 ddsi_make_writer_info 函数，使用写入者的结构体、写入者的质量 of 服务（QoS）信息以及数据的状态信息来初始化 wrinfo。
   dds_return_t rc;
   struct ddsi_writer_info wrinfo;
   ddsi_make_writer_info (&wrinfo, &wr->e, wr->xqos, payload->statusinfo);
+  //调用 ddsi_deliver_locally_allinsync 函数：该函数用于执行本地数据传递操作。参数包括 DDS 全局变量、写入者结构体、同步的读者数组、写入者信息、交付操作的函数指针、以及数据来源信息。
   rc = ddsi_deliver_locally_allinsync (wr->e.gv, &wr->e, false, &wr->rdary, &wrinfo, &deliver_locally_ops, &sourceinfo);
   if (rc == DDS_RETCODE_TIMEOUT)
     DDS_CERROR (&wr->e.gv->logconfig, "The writer could not deliver data on time, probably due to a local reader resources being full\n");
@@ -241,10 +255,16 @@ static dds_return_t deliver_data_network (struct ddsi_thread_state * const thrst
   }
 }
 
+/*
+综合来看，deliver_data_network 主要处理数据的网络传输，
+确保数据能够通过网络发送到其他节点，而 deliver_locally 则负责本地的数据传递，将数据直接交付给本地的读者。这两者的区别在于一个处理网络传输，
+另一个处理本地传递，因此它们的具体实现可能会涉及不同的网络通信操作或本地数据结构的处理。
+*/
 static dds_return_t deliver_data_any (struct ddsi_thread_state * const thrst, struct ddsi_writer *ddsi_wr, dds_writer *wr, struct ddsi_serdata_any *d, struct ddsi_xpack *xp, bool flush)
 {
   struct ddsi_tkmap_instance * const tk = ddsi_tkmap_lookup_instance_ref (ddsi_wr->e.gv->m_tkmap, &d->a);
   dds_return_t ret;
+  //该函数用于在网络上传递数据。它调用了其他函数，执行了与网络相关的操作，并处理了一些错误情况。具体的网络传输细节可能包括将数据发送到其他节点，处理序列号（sequence number）等。
   if ((ret = deliver_data_network (thrst, ddsi_wr, d, xp, flush, tk)) != DDS_RETCODE_OK)
   {
     ddsi_tkmap_instance_unref (ddsi_wr->e.gv->m_tkmap, tk);
@@ -259,6 +279,7 @@ static dds_return_t deliver_data_any (struct ddsi_thread_state * const thrst, st
 #else
   (void) wr;
 #endif
+//该函数用于在本地交付数据。在本地传递数据时，它可能会将数据交付给本地的读者。这可能涉及到调用其他函数，处理序列号等。
   ret = deliver_locally (ddsi_wr, &d->a, tk);
   ddsi_tkmap_instance_unref (ddsi_wr->e.gv->m_tkmap, tk);
   return ret;
@@ -282,6 +303,7 @@ static dds_return_t dds_writecdr_impl_common (struct ddsi_writer *ddsi_wr, struc
   // d = din: refc(d) = r, otherwise refc(d) = 1
 
   ddsi_thread_state_awake (thrst, ddsi_wr->e.gv);
+  //引用计数的适当管理有助于确保内存和其他资源得到有效地利用，避免内存泄漏和资源泄漏。
   ddsi_serdata_ref (&d->a); // d = din: refc(d) = r + 1, otherwise refc(d) = 2
 
 #ifdef DDS_HAS_SHM

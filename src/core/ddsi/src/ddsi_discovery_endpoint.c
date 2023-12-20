@@ -425,6 +425,36 @@ struct ddsi_addrset *ddsi_get_endpoint_addrset (const struct ddsi_domaingv *gv, 
   return as;
 }
 
+/*
+这段代码实现了处理SPDP（Simple Participant Discovery Protocol）中的Alive和Dead消息的逻辑。SPDP是DDS中的一种协议，用于在DDS域中进行参与者（Participants）的发现和管理。
+
+以下是这两个函数的主要功能：
+
+1. **`ddsi_handle_sedp_alive_endpoint`：**
+   - 用于处理Alive消息，表示有一个新的参与者（Participant）或端点（Endpoint）加入。
+   - 参数：
+     - `rst`：接收者状态，包含了一些与接收者有关的信息。
+     - `seq`：消息的序列号。
+     - `datap`：包含了消息中的一些信息，如端点GUID、QoS等。
+     - `sedp_kind`：标识是Reader还是Writer。
+     - `src_guid_prefix`：消息发送者的GUID前缀。
+     - `vendorid`：消息发送者的供应商标识。
+     - `timestamp`：消息的时间戳。
+
+2. **`ddsi_handle_sedp_dead_endpoint`：**
+   - 用于处理Dead消息，表示有一个参与者或端点离开。
+   - 参数：
+     - `rst`：接收者状态，包含了一些与接收者有关的信息。
+     - `datap`：包含了消息中的一些信息，如端点GUID、QoS等。
+     - `sedp_kind`：标识是Reader还是Writer。
+     - `timestamp`：消息的时间戳。
+
+在`ddsi_handle_sedp_alive_endpoint`函数中，首先进行了一系列检查，包括消息的合法性验证，然后根据消息中的信息创建或更新相应的Proxy Writer或Proxy Reader。根据消息的类型和一些配置参数，函数决定如何处理这个Alive消息。
+
+在`ddsi_handle_sedp_dead_endpoint`函数中，同样进行了检查，然后根据消息中的信息删除相应的Proxy Writer或Proxy Reader。根据消息的类型和一些配置参数，函数决定如何处理这个Dead消息。
+
+这两个函数都使用了一些辅助函数来执行具体的操作，如创建、更新、删除Proxy Writer/Reader，检查消息合法性等。整体来说，这两个函数是SPDP协议中处理新参与者加入和离开的核心逻辑。
+*/
 void ddsi_handle_sedp_alive_endpoint (const struct ddsi_receiver_state *rst, ddsi_seqno_t seq, ddsi_plist_t *datap /* note: potentially modifies datap */, ddsi_sedp_kind_t sedp_kind, const ddsi_guid_prefix_t *src_guid_prefix, ddsi_vendorid_t vendorid, ddsrt_wctime_t timestamp)
 {
 #define E(msg, lbl) do { GVLOGDISC (msg); goto lbl; } while (0)

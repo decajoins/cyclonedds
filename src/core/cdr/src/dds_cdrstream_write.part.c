@@ -592,6 +592,30 @@ static const uint32_t *dds_stream_write_plBO (DDS_OSTREAM_T * __restrict os, con
   return ops;
 }
 
+/**
+ * 
+ * 这是一个用于在 Big-Endian 字节序下实现写入的函数。该函数按照特定的操作码（DDS_OP）处理指令序列，执行相应的操作。
+
+参数解释：
+
+os: 指向 DDS_OSTREAM_T 结构的指针，表示输出流对象。
+data: 指向要写入的数据的指针。
+ops: 指向包含操作码的指令序列的指针。
+is_mutable_member: 一个布尔值，表示是否为可变成员。
+函数逻辑：
+
+函数使用 while 循环处理指令序列，直到遇到结束指令 DDS_OP_RTS。
+对于每个指令，它使用 switch 语句根据操作码执行相应的操作。
+DDS_OP_ADR: 调用 dds_stream_write_adrBO 函数，处理地址类型的操作。
+DDS_OP_JSR: 调用 dds_stream_write_implBO 函数，递归执行子程序。
+DDS_OP_RTS, DDS_OP_JEQ, DDS_OP_JEQ4, DDS_OP_KOF, DDS_OP_PLM: 抛出异常（abort），因为这些操作码不应该在当前上下文中出现。
+DDS_OP_DLC: 调用 dds_stream_write_delimitedBO 函数，处理定界符类型的操作。
+DDS_OP_PLC: 调用 dds_stream_write_plBO 函数，处理参数列表类型的操作。
+返回值：
+
+函数返回指令序列的指针，指向下一个要处理的指令。
+该函数的目的是按照 Big-Endian 字节序处理指令序列，执行相应的写入操作。
+*/
 static const uint32_t *dds_stream_write_implBO (DDS_OSTREAM_T * __restrict os, const struct dds_cdrstream_allocator * __restrict allocator, const char * __restrict data, const uint32_t * __restrict ops, bool is_mutable_member)
 {
   uint32_t insn;

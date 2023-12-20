@@ -36,11 +36,14 @@
 
 static void maybe_add_pp_as_meta_to_as_disc (struct ddsi_domaingv *gv, const struct ddsi_addrset *as_meta)
 {
+  //if 语句检查了元数据地址集 as_meta 是否为空的组播地址集，并且检查了配置中是否允许组播。如果组播地址集为空，或者配置中不允许 SPDP（Simple Participant Discovery Protocol） 组播，则执行以下步骤：
   if (ddsi_addrset_empty_mc (as_meta) || !(gv->config.allowMulticast & DDSI_AMC_SPDP))
   {
     ddsi_xlocator_t loc;
+    //if 语句内部，调用 ddsi_addrset_any_uc 函数，该函数从单播地址集中选择一个单播定位器。如果能够选择到单播定位器，将其存储在 ddsi_xlocator_t 结构体变量 loc 中。
     if (ddsi_addrset_any_uc (as_meta, &loc))
     {
+      //最后，调用 ddsi_add_xlocator_to_addrset 函数，将选择到的单播定位器添加到发现服务的地址集 gv->as_disc 中。这样，该单播定位器将作为元数据传递给发现服务，帮助其他参与者在网络中发现当前参与者。
       ddsi_add_xlocator_to_addrset (gv, gv->as_disc, &loc);
     }
   }
@@ -585,6 +588,7 @@ static int handle_spdp_alive (const struct ddsi_receiver_state *rst, ddsi_seqno_
 
   /* If advertised domain id or domain tag doesn't match, ignore the message.  Do this first to
      minimize the impact such messages have. */
+     //首先，检查广告的领域ID和领域标签是否与本地配置匹配，如果不匹配则忽略该消息。
   {
     const uint32_t domain_id = (datap->present & PP_DOMAIN_ID) ? datap->domain_id : gv->config.extDomainId.value;
     const char *domain_tag = (datap->present & PP_DOMAIN_TAG) ? datap->domain_tag : "";
@@ -594,7 +598,7 @@ static int handle_spdp_alive (const struct ddsi_receiver_state *rst, ddsi_seqno_
       return 0;
     }
   }
-
+  //然后，检查解析后的数据中是否包含有效的参与者GUID和内置端点集。
   if (!(datap->present & PP_PARTICIPANT_GUID) || !(datap->present & PP_BUILTIN_ENDPOINT_SET))
   {
     GVWARNING ("data (SPDP, vendor %u.%u): no/invalid payload\n", rst->vendor.id[0], rst->vendor.id[1]);
@@ -605,6 +609,7 @@ static int handle_spdp_alive (const struct ddsi_receiver_state *rst, ddsi_seqno_
      BUILTIN_ENDPOINT_DDSI_PARTICIPANT_MESSAGE_DATA_READER & ...WRITER, or
      so it seemed; and yet they are necessary for correct operation,
      so add them. */
+     //根据供应商（vendor）特定的条件和配置，可能会调整内置端点集。
   builtin_endpoint_set = datap->builtin_endpoint_set;
   if (ddsi_vendor_is_rti (rst->vendor) &&
       ((builtin_endpoint_set &
@@ -620,10 +625,11 @@ static int handle_spdp_alive (const struct ddsi_receiver_state *rst, ddsi_seqno_
       DDSI_BUILTIN_ENDPOINT_PARTICIPANT_MESSAGE_DATA_READER |
       DDSI_BUILTIN_ENDPOINT_PARTICIPANT_MESSAGE_DATA_WRITER;
   }
-
+//检查参与者的GUID是否已经存在，如果已存在，则根据不同情况处理。可能是本地创建的，也可能是已知的代理参与者。
   /* Do we know this GUID already? */
   {
     struct ddsi_entity_common *existing_entity;
+    
     if ((existing_entity = ddsi_entidx_lookup_guid_untyped (gv->entity_index, &datap->participant_guid)) == NULL)
     {
       /* Local SPDP packets may be looped back, and that can include ones
@@ -631,17 +637,21 @@ static int handle_spdp_alive (const struct ddsi_receiver_state *rst, ddsi_seqno_
          happens when deleting a participant is removing it from the hash
          table, and consequently the looped back packet may appear to be
          from an unknown participant.  So we handle that. */
+         // 未找到具有给定 GUID 的实体
+          // 如果该 GUID 是最近删除的参与者之一，则跳过处理
       if (ddsi_is_deleted_participant_guid (gv->deleted_participants, &datap->participant_guid, DDSI_DELETED_PPGUID_REMOTE))
       {
         RSTTRACE ("SPDP ST0 "PGUIDFMT" (recently deleted)", PGUID (datap->participant_guid));
         return 0;
       }
     }
+    // 如果找到的实体是本地参与者，则跳过处理
     else if (existing_entity->kind == DDSI_EK_PARTICIPANT)
     {
       RSTTRACE ("SPDP ST0 "PGUIDFMT" (local)", PGUID (datap->participant_guid));
       return 0;
     }
+    // 如果找到的实体是代理参与者，则进行相应处理
     else if (existing_entity->kind == DDSI_EK_PROXY_PARTICIPANT)
     {
       struct ddsi_proxy_participant *proxypp = (struct ddsi_proxy_participant *) existing_entity;
@@ -652,11 +662,13 @@ static int handle_spdp_alive (const struct ddsi_receiver_state *rst, ddsi_seqno_
          even skipping the automatic lease renewal. Note that proxy writers
          that are not alive are not set alive here. This is done only when
          data is received from a particular pwr (in handle_regular) */
+           // 不执行自动租约续订（lease renewal）的 SPDP 处理
       if ((lease = ddsrt_atomic_ldvoidp (&proxypp->minl_auto)) != NULL)
         ddsi_lease_renew (lease, ddsrt_time_elapsed ());
       ddsrt_mutex_lock (&proxypp->e.lock);
       if (proxypp->implicitly_created || seq > proxypp->seq)
       {
+         // 如果是新创建的或者序列号更新，则执行相应处理
         interesting = 1;
         if (!(gv->logconfig.c.mask & DDS_LC_TRACE))
           GVLOGDISC ("SPDP ST0 "PGUIDFMT, PGUID (datap->participant_guid));
@@ -671,6 +683,7 @@ static int handle_spdp_alive (const struct ddsi_receiver_state *rst, ddsi_seqno_
     {
       /* mismatch on entity kind: that should never have gotten past the
          input validation */
+         // 实体的种类与预期不符，这在输入验证过程中不应该发生
       GVWARNING ("data (SPDP, vendor %u.%u): "PGUIDFMT" kind mismatch\n", rst->vendor.id[0], rst->vendor.id[1], PGUID (datap->participant_guid));
       return 0;
     }
@@ -740,24 +753,33 @@ static int handle_spdp_alive (const struct ddsi_receiver_state *rst, ddsi_seqno_
     memset (&privileged_pp_guid.prefix, 0, sizeof (privileged_pp_guid.prefix));
   }
 
+//处理数据中的默认和元数据定位器，构建地址集合 locator->address -> gv_disc
   /* Choose locators */
   {
+    //定义一个名为 emptyset 的空定位器集合，其中 n 表示定位器数量，first 和 last 分别指向定位器链表的第一个和最后一个元素。
     const ddsi_locators_t emptyset = { .n = 0, .first = NULL, .last = NULL };
     const ddsi_locators_t *uc;
     const ddsi_locators_t *mc;
     ddsi_locator_t srcloc;
-    ddsi_interface_set_t intfs;
+    ddsi_interface_set_t intfs;//定义一个接口集合，用于存储接口信息。
 
     srcloc = rst->srcloc;
+    //根据数据中的标志位检查是否存在默认单播和组播定位器，如果存在则分别将指针指向相应的定位器集合，否则指向空集合。
     uc = (datap->present & PP_DEFAULT_UNICAST_LOCATOR) ? &datap->default_unicast_locators : &emptyset;
     mc = (datap->present & PP_DEFAULT_MULTICAST_LOCATOR) ? &datap->default_multicast_locators : &emptyset;
+   // 如果配置指定了使用对等端地址作为单播定位器，则将单播定位器设置为空集合，强制使用源定位器作为单播地址。
     if (gv->config.tcp_use_peeraddr_for_unicast)
       uc = &emptyset; // force use of source locator
+      //如果单播定位器集合不为空，将源定位器设置为未指定（unspecified），因为不是所有情况都可以使用源地址。
     else if (uc != &emptyset)
       ddsi_set_unspec_locator (&srcloc); // can't always use the source address
-
+  //初始化接口集合。
     ddsi_interface_set_init (&intfs);
+    //根据给定的定位器集合和接口集合创建地址集合，其中 as_default 表示默认地址集合。
     as_default = ddsi_addrset_from_locatorlists (gv, uc, mc, &srcloc, &intfs);
+
+//重复上述步骤，获取元数据单播和组播地址集合 as_meta。
+
 
     srcloc = rst->srcloc;
     uc = (datap->present & PP_METATRAFFIC_UNICAST_LOCATOR) ? &datap->metatraffic_unicast_locators : &emptyset;
@@ -769,23 +791,28 @@ static int handle_spdp_alive (const struct ddsi_receiver_state *rst, ddsi_seqno_
     ddsi_interface_set_init (&intfs);
     as_meta = ddsi_addrset_from_locatorlists (gv, uc, mc, &srcloc, &intfs);
 
+//记录默认和元数据地址集合的日志。
     ddsi_log_addrset (gv, DDS_LC_DISCOVERY, " (data", as_default);
     ddsi_log_addrset (gv, DDS_LC_DISCOVERY, " meta", as_meta);
     GVLOGDISC (")");
   }
 
+//检查默认单播或元数据单播地址集合是否为空。
   if (ddsi_addrset_empty_uc (as_default) || ddsi_addrset_empty_uc (as_meta))
   {
     GVLOGDISC (" (no unicast address");
+    //释放默认和元数据地址集合。
     ddsi_unref_addrset (as_default);
     ddsi_unref_addrset (as_meta);
     return 1;
   }
 
+//记录 QoS 日志。
   GVLOGDISC (" QOS={");
   ddsi_xqos_log (DDS_LC_DISCOVERY, &gv->logconfig, &datap->qos);
   GVLOGDISC ("}\n");
 
+//可能将代理参与者的元数据地址集合添加到发现地址集合中。
   maybe_add_pp_as_meta_to_as_disc (gv, as_meta);
 
   if (!ddsi_new_proxy_participant (gv, &datap->participant_guid, builtin_endpoint_set, &privileged_pp_guid, as_default, as_meta, datap, lease_duration, rst->vendor, custom_flags, timestamp, seq))

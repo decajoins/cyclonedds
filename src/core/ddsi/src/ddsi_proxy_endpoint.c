@@ -339,6 +339,21 @@ int ddsi_new_proxy_writer (struct ddsi_domaingv *gv, const struct ddsi_guid *ppg
   return 0;
 }
 
+/*
+
+这段代码实现了更新Proxy Writer的逻辑，主要针对SPDP Alive消息，用于更新Proxy Writer的状态信息，包括序列号、地址集、QoS等。
+
+以下是函数的主要步骤和功能：
+
+ddsi_update_proxy_writer 函数用于更新 Proxy Writer 的状态信息。
+函数参数包括 Proxy Writer 结构体指针 pwr、消息的序列号 seq、新的地址集 as、QoS 配置 xqos 以及时间戳 timestamp。
+首先，函数会获取 Proxy Writer 的锁，确保在更新状态信息时不会发生竞争条件。
+检查传入的序列号是否大于 Proxy Writer 当前的序列号，如果是，表示收到了更新的 Alive 消息。
+如果地址集发生变化，函数会更新 Proxy Writer 的地址集，并将其引用计数增加。同时，遍历 Proxy Writer 关联的所有 Proxy Reader，将其关联的实体的 EntityID 通过 ddsi_send_entityid_to_pwr 函数发送给 Proxy Writer。这个步骤主要是用于通知 Proxy Writer 相关的 Proxy Reader，以便它们能够更新与 Proxy Writer 的匹配关系。
+调用 ddsi_update_qos_locked 函数更新 Proxy Writer 的 QoS 配置。
+最后释放 Proxy Writer 的锁。
+总体来说，这个函数用于根据 Alive 消息更新 Proxy Writer 的状态，确保 Proxy Writer 能够反映出域中的最新信息，包括地址集、QoS 等。
+*/
 void ddsi_update_proxy_writer (struct ddsi_proxy_writer *pwr, ddsi_seqno_t seq, struct ddsi_addrset *as, const struct dds_qos *xqos, ddsrt_wctime_t timestamp)
 {
   struct ddsi_reader * rd;

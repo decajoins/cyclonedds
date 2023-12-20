@@ -291,21 +291,30 @@ int ddsi_addrset_purge (struct ddsi_addrset *as)
   return 0;
 }
 
-static void add_xlocator_to_addrset_impl (const struct ddsi_domaingv *gv, struct ddsi_addrset *as, const ddsi_xlocator_t *loc)
+static void add_xlocator_to_addrset_impl(const struct ddsi_domaingv *gv, struct ddsi_addrset *as, const ddsi_xlocator_t *loc)
 {
-  assert (!ddsi_is_unspec_locator (&loc->c));
-  assert (loc->conn != NULL);
+  // 确保定位器是有效的（非未指定的）且连接非空
+  assert(!ddsi_is_unspec_locator(&loc->c));
+  assert(loc->conn != NULL);
+
   ddsrt_avl_ipath_t path;
-  ddsrt_avl_ctree_t *tree = ddsi_is_mcaddr (gv, &loc->c) ? &as->mcaddrs : &as->ucaddrs;
-  LOCK (as);
-  if (ddsrt_avl_clookup_ipath (&addrset_treedef, tree, loc, &path) == NULL)
+  // 根据定位器是组播还是单播选择相应的地址集
+  ddsrt_avl_ctree_t *tree = ddsi_is_mcaddr(gv, &loc->c) ? &as->mcaddrs : &as->ucaddrs;
+
+  // 加锁以确保多线程安全
+  LOCK(as);
+  // 尝试在地址集中查找定位器
+  if (ddsrt_avl_clookup_ipath(&addrset_treedef, tree, loc, &path) == NULL)
   {
-    struct ddsi_addrset_node *n = ddsrt_malloc (sizeof (*n));
+    // 如果找不到，则创建一个新节点并插入地址集
+    struct ddsi_addrset_node *n = ddsrt_malloc(sizeof(*n));
     n->loc = *loc;
-    ddsrt_avl_cinsert_ipath (&addrset_treedef, tree, n, &path);
+    ddsrt_avl_cinsert_ipath(&addrset_treedef, tree, n, &path);
   }
-  UNLOCK (as);
+  // 解锁
+  UNLOCK(as);
 }
+
 
 void ddsi_add_xlocator_to_addrset (const struct ddsi_domaingv *gv, struct ddsi_addrset *as, const ddsi_xlocator_t *loc)
 {
@@ -314,31 +323,42 @@ void ddsi_add_xlocator_to_addrset (const struct ddsi_domaingv *gv, struct ddsi_a
   add_xlocator_to_addrset_impl (gv, as, loc);
 }
 
-void ddsi_add_locator_to_addrset (const struct ddsi_domaingv *gv, struct ddsi_addrset *as, const ddsi_locator_t *loc)
+void ddsi_add_locator_to_addrset(const struct ddsi_domaingv *gv, struct ddsi_addrset *as, const ddsi_locator_t *loc)
 {
-  if (ddsi_is_unspec_locator (loc))
-    return;
-  if (ddsi_is_mcaddr (gv, loc))
+  if (ddsi_is_unspec_locator(loc))
+    return;  // 不处理未指定的定位器
+
+  if (ddsi_is_mcaddr(gv, loc))
   {
-    // multicast: use all transmit connections
+    // 处理组播地址：使用所有传输连接
     for (int i = 0; i < gv->n_interfaces; i++)
     {
-      if (ddsi_factory_supports (gv->xmit_conns[i]->m_factory, loc->kind))
-        add_xlocator_to_addrset_impl (gv, as, &(const ddsi_xlocator_t) {
-          .conn = gv->xmit_conns[i],
-          .c = *loc });
+      if (ddsi_factory_supports(gv->xmit_conns[i]->m_factory, loc->kind))
+      {
+        add_xlocator_to_addrset_impl(gv, as, &(const ddsi_xlocator_t){
+                                                 .conn = gv->xmit_conns[i],
+                                                 .c = *loc });
+      }
     }
   }
   else
   {
-    // unicast: assume the kernel knows how to route it from any connection
-    // if it doesn't match a local interface
+    /**
+     *
+     * interf_idx 表示匹配本地或自身的接口索引。当找到匹配的接口时，interf_idx 被设置为该接口的索引值，表示找到了一个本地接口。在 switch 语句的 case DNAR_SELF: 和 case DNAR_LOCAL: 分支中，interf_idx 被设置为当前接口的索引值。
+        fallback_interf_idx 表示远程接口的备用索引。在 switch 语句的 case DNAR_DISTANT: 分支中，如果尚未找到匹配本地或自身的接口，且找到了远程接口，fallback_interf_idx 被设置为当前接口的索引值。
+        最后，根据情况选择索引值，将定位器添加到地址集中。如果 interf_idx >= 0，表示找到了匹配本地或自身的接口，就选择该索引值；否则，如果 fallback_interf_idx >= 0，表示找到了远程接口，就选择备用索引值。选择索引值后，调用 add_xlocator_to_addrset_impl
+        函数将定位器添加到地址集中。这样可以确保选择了适当的接口索引，以便将单播地址的定位器正确路由到连接。
+    */
+    // 处理单播地址：假设内核知道如何从任何连接路由到它，如果不匹配本地接口
     int interf_idx = -1, fallback_interf_idx = -1;
+
     for (int i = 0; i < gv->n_interfaces && interf_idx < 0; i++)
     {
-      if (!ddsi_factory_supports (gv->xmit_conns[i]->m_factory, loc->kind))
+      if (!ddsi_factory_supports(gv->xmit_conns[i]->m_factory, loc->kind))
         continue;
-      switch (ddsi_is_nearby_address (gv, loc, (size_t) gv->n_interfaces, gv->interfaces, NULL))
+
+      switch (ddsi_is_nearby_address(gv, loc, (size_t)gv->n_interfaces, gv->interfaces, NULL))
       {
         case DNAR_SELF:
         case DNAR_LOCAL:
@@ -352,15 +372,18 @@ void ddsi_add_locator_to_addrset (const struct ddsi_domaingv *gv, struct ddsi_ad
           break;
       }
     }
+//如果是单播地址，则尝试通过本地接口（gv->n_interfaces）来确定如何将定位器路由到连接。在此过程中，可能会有两个索引值：interf_idx 表示匹配本地或自身的接口索引，而 fallback_interf_idx 表示远程接口的备用索引。
+//最后，根据情况选择索引值，将定位器添加到地址集中。
     if (interf_idx >= 0 || fallback_interf_idx >= 0)
     {
       const int i = (interf_idx >= 0) ? interf_idx : fallback_interf_idx;
-      add_xlocator_to_addrset_impl (gv, as, &(const ddsi_xlocator_t) {
-        .conn = gv->xmit_conns[i],
-        .c = *loc });
+      add_xlocator_to_addrset_impl(gv, as, &(const ddsi_xlocator_t){
+                                               .conn = gv->xmit_conns[i],
+                                               .c = *loc });
     }
   }
 }
+
 
 void ddsi_remove_from_addrset (const struct ddsi_domaingv *gv, struct ddsi_addrset *as, const ddsi_xlocator_t *loc)
 {
