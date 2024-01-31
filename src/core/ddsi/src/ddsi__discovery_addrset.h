@@ -17,6 +17,7 @@
 extern "C" {
 #endif
 
+//ddsi_interface_set_t 结构体：该结构体定义了一个接口集合，其中 xs 数组用于表示每个可能的传输连接是否可用。
 typedef struct ddsi_interface_set {
   bool xs[MAX_XMIT_CONNS];
 } ddsi_interface_set_t;
@@ -25,6 +26,7 @@ typedef struct ddsi_interface_set {
  * @component discovery
  * 
  * @param[out] intfs interface set to initialize */
+// /该函数用于初始化一个接口集合，将其所有成员都设置为 false，即所有传输连接都被视为不可用。
 void ddsi_interface_set_init (ddsi_interface_set_t *intfs)
   ddsrt_nonnull_all;
 
@@ -33,6 +35,7 @@ void ddsi_interface_set_init (ddsi_interface_set_t *intfs)
  *
  * @param[in] gv domain
  * @return true iff multicast locators are to be included */
+//该函数用于确定在发现信息中是否应包含多播定位器。检查域（domain）的配置信息，判断是否应该在发现信息中包含多播定位器。返回 true 表示应该包含，否则返回 false。
 bool ddsi_include_multicast_locator_in_discovery (const struct ddsi_domaingv *gv)
   ddsrt_nonnull_all;
 
@@ -64,6 +67,9 @@ bool ddsi_include_multicast_locator_in_discovery (const struct ddsi_domaingv *gv
  * @param[in,out] inherited_intfs set of applicable interfaces, may be NULL
  *
  * @return new addrset, possibly empty */
+//该函数用于从 SPDP（Simple Participant Discovery Protocol） 或 SEDP（Simple Endpoint Discovery Protocol） 接收到的单播和多播定位器列表构建新的地址集。
+//函数根据一些启发式方法确定哪些接口可能适用，并使用此信息设置传输套接字。它还会根据一些规则处理回环地址和单播地址，以构建新的地址集。
+//函数的参数包括域状态信息、广告的单播和多播定位器列表、发现数据包的源地址，以及继承的接口集合。函数返回一个新的地址集
 struct ddsi_addrset *ddsi_addrset_from_locatorlists (const struct ddsi_domaingv *gv, const ddsi_locators_t *uc, const ddsi_locators_t *mc, const ddsi_locator_t *srcloc, const ddsi_interface_set_t *inherited_intfs)
   ddsrt_attribute_warn_unused_result ddsrt_nonnull((1,2,3,4));
 

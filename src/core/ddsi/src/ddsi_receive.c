@@ -1226,6 +1226,12 @@ static void handle_Heartbeat_helper (struct ddsi_pwr_rd_match * const wn, struct
     return;
   }
 
+/*
+
+accept_ack_or_hb_w_timeout 函数判断是否应该处理 ACKNACK。该函数用于判断两次处理 ACKNACK 或心跳消息的时间间隔是否足够，以防止频繁处理。
+
+如果时间间隔不足，表示不应该处理当前的 ACKNACK 或心跳消息，直接返回。
+如果时间间隔足够，继续执行后续操作*/
   if (!accept_ack_or_hb_w_timeout (msg->count, &wn->prev_heartbeat, arg->tnow, &wn->t_heartbeat_accepted, 0))
   {
     RSTTRACE (" ("PGUIDFMT")", PGUID (wn->rd_guid));
@@ -1248,6 +1254,9 @@ static void handle_Heartbeat_helper (struct ddsi_pwr_rd_match * const wn, struct
   if (arg->directed_heartbeat)
     wn->directed_heartbeat = 1;
 
+  //主要用于决定是否要调度ACKNACK事件以及何时调度。
+// 通过调用get_acknack_info函数获取ACKNACK信息，并根据结果决定后续的操作。
+// 针对不同的结果（AANR_SUPPRESSED_ACK，AANR_SUPPRESSED_NACK等），决定是否执行后续操作或重新调度ACKNACK事件。
   ddsi_sched_acknack_if_needed (wn->acknack_xevent, pwr, wn, arg->tnow_mt, true);
 }
 
@@ -1326,6 +1335,19 @@ static int handle_Heartbeat (struct ddsi_receiver_state *rst, ddsrt_etime_t tnow
   // establishing a well-defined start point for a reliable session *and* it also defines
   // that one may have a transient-local writer with a volatile reader, and so the last
   // sequence number is the only one that can be used to start up a volatile reader ...
+  /*
+  GAP的插入和处理： 在心跳处理的过程中，通过插入GAP来处理可能缺失的数据范围。GAP表示某个范围内的数据可能在传输过程中丢失，需要进行处理。
+
+第一次心跳特殊处理： 对于第一次接收到的心跳消息，特殊处理 gap_end_seq 以确保它等于 firstseq。这是因为在初始阶段，通信双方可能尚未建立同步，需要特殊处理以确保正确的起始点。
+
+更新代理写者状态： 根据心跳消息中的信息更新代理写者的最后一次序列号和碎片编号。这有助于跟踪写者发布的数据状态。
+
+GAP的过滤： 根据配置和目标GUID等条件，尝试对GAP进行过滤。过滤的目的是将消息发送到指定的读者，而不是广播给所有读者。
+
+将GAP加入待发送队列： 将经过处理的GAP加入到待发送队列，准备发送给相应的读者。根据配置选择同步或异步地处理用户数据。
+
+处理读者状态： 根据读者的同步状态（同步、追赶转瞬本地数据、失步）进行相应的处理。例如，在失步状态下，使用 firstseq 处理GAP，并通知相应的读者。
+  */
   ddsi_seqno_t gap_end_seq = firstseq;
   if (!pwr->have_seen_heartbeat)
   {

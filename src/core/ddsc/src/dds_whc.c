@@ -861,6 +861,7 @@ static uint32_t whc_default_remove_acked_messages_noidx (struct whc_impl *whc, d
   uint32_t ndropped = 0;
 
   /* In the trivial case of an empty WHC, get out quickly */
+  //（1）	首先判断whc中保存的已经丢掉的数据的序列号比现在要丢的序列号还大（说明在丢这个数据之前已经丢过更大的序列号的数据了），直接返回
   if (max_drop_seq <= whc->max_drop_seq || whc->maxseq_node == NULL)
   {
     if (max_drop_seq > whc->max_drop_seq)
@@ -878,6 +879,8 @@ static uint32_t whc_default_remove_acked_messages_noidx (struct whc_impl *whc, d
 #endif
   intv = whc->open_intv;
 
+
+// （2）	在whc中查找这次需要丢弃的数据的序列号，如果没找到，则使用whc中保存的最大序列号的whc_node来做后续判断，如果找到了就用这个序列号的whc_node
   /* Drop everything up to and including max_drop_seq, or absent that one,
    the highest available sequence number (which then must be less) */
   if ((whcn = whc_findseq (whc, max_drop_seq)) == NULL)
@@ -893,12 +896,79 @@ static uint32_t whc_default_remove_acked_messages_noidx (struct whc_impl *whc, d
       return 0;
     }
     else
-    {
+    {/*  */
       whcn = whc->maxseq_node;
       assert (whcn->common.seq < max_drop_seq);
     }
   }
 
+/*
+（3）	需要丢弃的数据的数量=当前whc_node序号-intv中最小的序号+1
+Intv中链接了从某一个序列号到另一个序列号之间的所有连续数据，不连续的使用另一个intv，所有intv使用whc->seq这个链表链接起来，whc->open_intv指向的总是最后保存的那个intv，具体逻辑见wch插入节点部分。
+然后重新组织intv链 表，intv中的第一个whc_node为本次需要丢弃节点的下一个节点，其最小计数也变为需要丢弃数据的下一个序列号
+
+*/
+
+
+/*
+
+这段代码的目的是移除 Writer History Cache (whc) 中的已确认消息，并更新相关的数据结构。让我们通过一个实际例子来解释这个过程。
+
+假设 whc 中有以下消息序列号（seq）的消息：
+
+Copy code
+| 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
+假设当前的 max_drop_seq 为 4，即我们需要移除序列号 4 及之前的所有已确认消息。
+
+intv 表示一个间隔结构，其中包含一系列连续的消息。在这个例子中，我们的 intv 可能包含 1, 2, 3, 4 这些序列号。
+
+deferred_free_list 将保存我们需要释放的节点列表。
+
+计算 ndropped，即需要丢弃的消息数量。在这个例子中，ndropped 将是 4 - 1 + 1 = 4，因为我们需要丢弃 4 个消息。
+
+更新 intv 的相关信息：
+
+intv->first 将指向需要丢弃的消息的下一个节点。在这个例子中，可能是序列号 5 对应的节点。
+intv->min 将更新为 max_drop_seq + 1，即 5。
+如果 whcn->next_seq 为 NULL，表示 intv 中只有一个消息，我们将更新 whc->maxseq_node 为 NULL，同时 intv->maxp1 也更新为 intv->min，即 5。
+
+如果 whcn->next_seq 不为 NULL，我们会确保 whcn->next_seq->common.seq 等于 max_drop_seq + 1，然后将 whcn->next_seq->prev_seq 更新为 NULL。
+
+遍历需要释放的节点列表，计算并更新 whc->unacked_bytes，并执行一些其他清理操作（这里可能涉及生命周期管理等）。
+
+最后，更新相关的统计信息，包括 whc->seq_size 和 whc->max_drop_seq。
+
+通过这个过程，我们成功地从 Writer History Cache 中移除了已确认的消息，并更新了相关的数据结构，以保持数据的一致性和正确性。这是一种高效管理已确认消息的方式。
+*/
+
+
+/*
+
+处理 intv 中只有一个消息的情况：
+
+如果 whcn->next_seq 为 NULL，表示在当前的 intv 中只有一个消息。在这种情况下，我们将更新 whc->maxseq_node 为 NULL，同时 intv->maxp1 也更新为 intv->min。这是因为只有一个消息，它就是 maxseq_node，而 intv->maxp1 表示 intv 中消息的最大序列号加一，由于只有一个消息，所以它等于 intv->min。
+处理 intv 中有多个消息的情况：
+
+
+(现在，我们的 intv 只包含一个消息，即序列号 1。
+
+如果当前的 max_drop_seq 为 1，表示我们需要移除序列号 1 及之前的所有已确认消息。
+
+在这种情况下，whcn->next_seq 为 NULL，因为 intv 中只有一个消息。因此，我们会更新 whc->maxseq_node 为 NULL，同时 intv->maxp1 也会更新为 intv->min，即 2。
+
+这是因为在只有一个消息的情况下，这个消息就是 intv 的唯一消息，它同时也是最大的消息，因此 maxseq_node 会被更新为 NULL。同时，maxp1 会被设置为 min，表示 intv 中消息的最大序列号加一，但由于只有一个消息，它等于 min。)
+
+
+
+如果 whcn->next_seq 不为 NULL，表示在当前的 intv 中有多个消息。在这种情况下，我们确保 whcn->next_seq->common.seq 等于 max_drop_seq + 1。这是因为我们将 intv 的 min 更新为 max_drop_seq + 1，所以下一个消息的序列号应该是这个值。
+然后，我们将 whcn->next_seq->prev_seq 更新为 NULL，确保下一个消息的前一个节点为 NULL。
+遍历需要释放的节点列表：
+
+我们通过遍历 deferred_free_list 来释放节点。在这个过程中，我们可能会涉及生命周期管理等任务。同时，我们计算并更新 whc->unacked_bytes，以确保维护正确的未确认字节数。
+更新相关的统计信息：
+
+最后，我们更新一些相关的统计信息，包括 whc->seq_size（表示 whc 中当前消息的数量）和 whc->max_drop_seq（表示已确认的消息的最大序列号）
+*/
   *deferred_free_list = (struct ddsi_whc_node *) intv->first;
   ndropped = (uint32_t) (whcn->common.seq - intv->min + 1);
 
@@ -916,6 +986,42 @@ static uint32_t whc_default_remove_acked_messages_noidx (struct whc_impl *whc, d
   }
   whcn->next_seq = NULL;
 
+/**
+ * 
+这段代码的目的是处理需要释放的节点列表，并更新 Writer History Cache (WHC) 的未确认字节数。
+
+deferred_free_list 是一个指向需要释放的节点列表的指针。在这里，它被转换为指向 struct dds_whc_default_node 类型的指针 dfln。
+
+assert 语句用于进行断言检查，确保表达式 whcn->total_bytes - dfln->total_bytes + dfln->size <= whc->unacked_bytes 为真。如果该表达式为假，则会触发断言失败，用于调试和排查问题。
+
+如果断言为真，即未确认字节数的变化在合理范围内，那么执行以下操作：
+
+计算需要减去的未确认字节数。这是通过计算当前节点 whcn 的总字节数减去节点列表中第一个节点 dfln 的总字节数再加上第一个节点的大小来实现的。
+
+更新 Writer History Cache (whc) 的未确认字节数，减去计算得到的值。这是为了确保 WHC 中维护的未确认字节数正确反映实际情况。
+
+这段代码的主要目的是在释放节点列表的同
+*/
+
+/*
+
+假设我们有以下两个节点，分别代表两个消息：
+
+节点 whcn，代表消息1，总字节数为 10 字节。
+节点 dfln，代表消息2，总字节数为 5 字节，节点大小为 2 字节。
+当前 WHC 的未确认字节数为 10 字节，因为只有消息1被确认，而消息2未被确认。现在，我们希望释放节点 dfln，并更新 WHC 的未确认字节数。
+
+计算过程如下：
+
+当前节点 whcn 的总字节数为 10 字节。
+节点列表中第一个节点 dfln 的总字节数为 5 字节。
+节点列表中第一个节点 dfln 的大小为 2 字节。
+使用公式：whcn->total_bytes - dfln->total_bytes + dfln->size，
+
+计算结果为：10 - 5 + 2 = 7 字节。   10 -（5-2）未确认字节数
+
+这个结果表示，释放节点 dfln 后，WHC 中的未确认字节数从 10 字节减少到 7 字节，因为节点 dfln 的总字节数被移除，而节点 whcn 的总字节数保持不变。这样的更新确保了未确认字节数的准确性。
+*/
   struct dds_whc_default_node *dfln = (struct dds_whc_default_node *) *deferred_free_list;
   assert (whcn->total_bytes - dfln->total_bytes + dfln->size <= whc->unacked_bytes);
   whc->unacked_bytes -= (size_t) (whcn->total_bytes - dfln->total_bytes + dfln->size);
@@ -942,6 +1048,12 @@ static uint32_t whc_default_remove_acked_messages_full (struct whc_impl *whc, dd
   struct dds_whc_default_node deferred_list_head, *last_to_free = &deferred_list_head;
   uint32_t ndropped = 0;
 
+/*
+处理特殊情况（Transient Local Durability）：
+
+如果 whc->wrinfo.is_transient_local 为真且 whc->wrinfo.tldepth 为零，表示使用了 Transient Local Durability 
+且不保留任何消息。在这种情况下，函数会快速确认所有消息，但不删除任何消息，因为在 Transient Local 模式下，所有消息都被保留。最后，将 *deferred_free_list 设置为 NULL，表示没有需要释放的节点。
+*/
   whcn = find_nextseq_intv (&intv, whc, whc->max_drop_seq);
   if (whc->wrinfo.is_transient_local && whc->wrinfo.tldepth == 0)
   {
@@ -963,6 +1075,40 @@ static uint32_t whc_default_remove_acked_messages_full (struct whc_impl *whc, dd
     return 0;
   }
 
+/*
+
+
+假设有一个 Writer 产生的消息序列如下：
+
+Message with seq=5
+Message with seq=6
+Message with seq=7
+Message with seq=8
+Message with seq=9
+现在，Reader 告知 Writer 它已经成功接收并处理了序列号为 7 的消息及之前的所有消息，并希望 Writer 删除这些已确认的消息。Reader 的确认序列号为 7（max_drop_seq 是 7）。
+
+whcn（当前消息节点）初始化为 Writer 保存的消息链表的头部，即序列号为 5 的消息节点。
+进入循环，第一个消息序列号为 5，小于 max_drop_seq，因此需要进行处理。
+由于序列号 5 在 Transient Local Index 中，所以执行快速跳过（tl:keep）操作。
+更新 unacked_bytes。
+将 prev_seq 设置为当前消息节点，即序列号为 5 的消息。
+将 whcn 移动到下一个消息节点，即序列号为 6 的消息。
+进入下一次循环，序列号为 6，小于 max_drop_seq，需要处理。
+与上一步相似，在 Transient Local Index 中执行快速跳过操作。
+更新 unacked_bytes。
+将 prev_seq 设置为当前消息节点，即序列号为 6 的消息。
+将 whcn 移动到下一个消息节点，即序列号为 7 的消息。
+进入下一次循环，序列号为 7，等于 max_drop_seq，需要处理。
+因为这是确认的消息，所以执行快速跳过操作，更新 unacked_bytes。
+由于消息不在 Transient Local Index 中，执行删除操作，将消息节点加入到待释放链表。
+更新 prev_seq 为当前消息节点的前一个节点，即序列号为 6 的消息。
+删除当前消息节点，将 whcn 移动到下一个消息节点，即序列号为 8 的消息。
+以此类推，直到处理完所有消息。
+在最终的收尾操作中，链表会重新连接，形成一个待释放链表。这个链表的头节点就是 deferred_free_list，里面包含了需要释放的消息节点。
+
+希望这个示例能够帮助理解这段代码的具体执行过程。
+
+*/
   deferred_list_head.next_seq = NULL;
   prev_seq = whcn ? whcn->prev_seq : NULL;
   while (whcn && whcn->common.seq <= max_drop_seq)
@@ -1004,11 +1150,56 @@ static uint32_t whc_default_remove_acked_messages_full (struct whc_impl *whc, dd
   last_to_free->next_seq = NULL;
   *deferred_free_list = (struct ddsi_whc_node *) deferred_list_head.next_seq;
 
+  /*
+  
+在DDS（Data Distribution Service）中，Writer（写者）使用的参数与持久性、索引和瞬态本地历史相关。以下是这些深度参数的解释：
+
+历史深度（whc->wrinfo.hdepth）：
+
+意义： 历史深度表示 Writer 在数据历史中保留的消息数量。这是 Writer 可以保留的最大消息数。
+例子： 如果历史深度为 10，Writer 将保留最近的 10 条消息。
+索引深度（whc->wrinfo.idxdepth）：
+
+意义： 索引深度表示 Writer 使用的索引节点的数量。索引节点用于管理消息，可以帮助加速消息的查找和删除。
+例子： 如果索引深度为 15，Writer 使用 15 个索引节点来组织和管理消息。
+瞬态本地历史（whc->wrinfo.is_transient_local）：
+
+意义： 瞬态本地历史表示是否启用了瞬态本地历史。瞬态本地历史用于在本地保留消息，以便在一段时间内处理临时断开的订阅者。
+例子： 如果启用了瞬态本地历史，Writer 将在本地保存一些消息，以便在某个订阅者重新连接时能够提供历史消息。
+瞬态本地历史深度（whc->wrinfo.tldepth）：
+
+意义： 瞬态本地历史深度表示在瞬态本地历史中保留的消息数量。
+例子： 如果瞬态本地历史深度为 5，Writer 在本地保留最近的 5 条消息供断开连接的订阅者使用。
+这些深度参数帮助 Writer 在不同的情境下管理历史数据的数量和保留策略。持久性、索引和瞬态本地历史是 DDS 中用于确保可靠数据传输和历史消息访问的重要机制。
+  
+  */
+
   /* If the history is deeper than durability_service.history (but not KEEP_ALL), then there
    may be old samples in this instance, samples that were retained because they were within
    the T-L history but that are not anymore. Writing new samples will eventually push these
    out, but if the difference is large and the update rate low, it may take a long time.
    Thus, we had better prune them. */
+   /*
+   Writer（写者）使用持久性服务，并且其历史深度（whc->wrinfo.hdepth）为 10。
+Writer 的索引深度（whc->wrinfo.idxdepth）为 15。
+Writer 使用瞬态本地历史（whc->wrinfo.is_transient_local 为真）且其瞬态本地历史深度（whc->wrinfo.tldepth）为 5。
+在这种情况下，持久性服务的历史深度大于瞬态本地历史深度，而索引深度又大于瞬态本地历史深度，就会触发"剪枝"操作。
+
+假设当前实例中的消息序列号范围为 1 到 20。在第一个 pass 中，一些消息被保留在实例中，因为它们在瞬态本地历史中。然后，由于一些条件（例如时间或其他策略），Writer 决定在消息序列号 15 之前进行剪枝。
+
+第一个 pass：Writer 通过遍历消息序列号范围，找到被保留的消息，同时标记这些消息为已发送（unacked 标志）。
+
+Copy code
+保留的消息序列号：5, 8, 12, 14, 18
+剪枝操作：Writer 进行第二遍遍历，此时只处理在第一个 pass 中被保留的消息。对于每个保留的消息，Writer 找到其关联的索引节点，然后删除在剪枝序列号（15）之前的旧样本。
+
+对于序列号 5：删除与之相关的索引节点中序列号小于 15 的旧样本。
+对于序列号 8：同样删除与之相关的索引节点中序列号小于 15 的旧样本。
+对于其他保留的消息也执行相同的操作。
+Copy code
+删除的旧样本：1, 3, 6, 7, 9, 10, 11, 13
+通过这个"剪枝"操作，Writer 清理了实例中不再需要的数据，释放了相关资源，确保实例中的数据仅保留最新的信息，降低了历史数据的存储成本。
+   */
   if (whc->wrinfo.tldepth > 0 && whc->wrinfo.idxdepth > whc->wrinfo.tldepth)
   {
     assert (whc->wrinfo.hdepth == whc->wrinfo.idxdepth);
@@ -1246,6 +1437,7 @@ static int whc_default_insert (struct ddsi_whc *whc_generic, ddsi_seqno_t max_dr
 #ifdef DDS_HAS_DEADLINE_MISSED
       ddsi_deadline_renew_instance_locked (&whc->deadline, &idxn->deadline);
 #endif
+//如果未找到相同的索引节点 idxn，表示是新的键，执行插入新键的操作。idxdepth > 0:keeplast
       if (whc->wrinfo.idxdepth > 0)
       {
         struct dds_whc_default_node *oldn;
@@ -1302,6 +1494,7 @@ static int whc_default_insert (struct ddsi_whc *whc_generic, ddsi_seqno_t max_dr
       idxn->tk = tk;
       idxn->prune_seq = 0;
       idxn->headidx = 0;
+      //一系列操作初始化新的索引项，包括将新节点插入历史数据中。
       if (whc->wrinfo.idxdepth > 0)
       {
         idxn->hist[0] = newn;

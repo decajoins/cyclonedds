@@ -106,14 +106,20 @@ static void addrset_from_locatorlists_add_one (struct ddsi_domaingv const * cons
       break;
   }
 }
-
+//从广告的单播和多播定位器列表中构建一个地址集，确保选择适当的网络接口，以便在DDS系统中实现正确的通信。
 struct ddsi_addrset *ddsi_addrset_from_locatorlists (const struct ddsi_domaingv *gv, const ddsi_locators_t *uc, const ddsi_locators_t *mc, const ddsi_locator_t *srcloc, const ddsi_interface_set_t *inherited_intfs)
 {
+  //初始化一个新的地址集。
   struct ddsi_addrset *as = ddsi_new_addrset ();
+  //创建一个接口集合 intfs。
   ddsi_interface_set_t intfs;
+  //初始化接口集合。创建一个接口集合，并初始化为全假（所有接口都未启用）
   ddsi_interface_set_init (&intfs);
 
   // if all interfaces are loopback, or all locators in uc are loopback, we're cool with loopback addresses
+  //检查是否允许使用 loopback 地址，并根据配置和广告的定位器信息判断是否允许。如果允许，则设置 allow_loopback 为 true。
+  //这是一个块级作用域，包含两个布尔变量 a 和 b 的初始化。首先，通过循环检查所有系统接口是否都是环回地址，将结果存储在变量 a 中。接着，
+  //通过循环检查广播定位器列表中的地址是否为环回地址，将结果存储在变量 b 中。最后，allow_loopback 被设置为 a 和 b 的逻辑或运算结果。
   bool allow_loopback;
   {
     bool a = true;
@@ -129,15 +135,19 @@ struct ddsi_addrset *ddsi_addrset_from_locatorlists (const struct ddsi_domaingv 
 
   // if any non-loopback address is identical to one of our own addresses (actual or advertised),
   // assume it is the same machine, in which case loopback addresses may be picked up
+  //如果不允许使用环回地址，则检查是否有非环回地址与系统的接口地址相同，如果有，则允许使用环回地址。
   for (struct ddsi_locators_one *l = uc->first; l != NULL && !allow_loopback; l = l->next)
   {
     if (ddsi_is_loopbackaddr (gv, &l->loc))
       continue;
+      //就认为当前主机与定位器所在的主机是相邻的，即在同一主机上
     allow_loopback = (ddsi_is_nearby_address (gv, &l->loc, (size_t) gv->n_interfaces, gv->interfaces, NULL) == DNAR_SELF);
   }
   //GVTRACE(" allow_loopback=%d\n", allow_loopback);
 
+//用于标识是否是直连，初始化为假。
   bool direct = false;
+  //处理单播地址列表
   for (struct ddsi_locators_one *l = uc->first; l != NULL; l = l->next)
   {
 #if 0
@@ -148,15 +158,22 @@ struct ddsi_addrset *ddsi_addrset_from_locatorlists (const struct ddsi_domaingv 
     }
 #endif
     // skip unrecognized ones, as well as loopback ones if not on the same host
+    //- 如果不允许使用环回地址且当前定位器是环回地址，则跳过，不处理该定位器。
     if (!allow_loopback && ddsi_is_loopbackaddr (gv, &l->loc))
       continue;
 
+//复制当前定位器的地址到 loc 变量。
     ddsi_locator_t loc = l->loc;
 
     // if the advertised locator matches our own external locator, than presumably
     // it is the same machine and should be addressed using the actual interface
     // address
+    //用于标识当前地址是否是外部地址且与系统的接口地址相同。
+    
+
+
     bool extloc_of_self = false;
+    //遍历系统的接口地址，检查当前地址是否与系统的外部接口地址相同。如果相同，则将当前地址转换为系统的内部接口地址
     for (int i = 0; i < gv->n_interfaces; i++)
     {
       if (loc.kind == gv->interfaces[i].loc.kind && memcmp (loc.address, gv->interfaces[i].extloc.address, sizeof (loc.address)) == 0)
@@ -166,13 +183,78 @@ struct ddsi_addrset *ddsi_addrset_from_locatorlists (const struct ddsi_domaingv 
         break;
       }
     }
-
+  //如果当前地址是 IPv4 UDP 地址，且存在外部地址掩码，则进行地址转换。转换的目的是将定位器地址转换为与系统内部接口地址在同一子网上的地址。
     if (!extloc_of_self && loc.kind == DDSI_LOCATOR_KIND_UDPv4 && gv->extmask.kind != DDSI_LOCATOR_KIND_INVALID)
     {
       /* If the examined locator is in the same subnet as our own
          external IP address, this locator will be translated into one
          in the same subnet as our own local ip and selected. */
       assert (gv->n_interfaces == 1); // gv->extmask: the hack is only supported if limited to a single interface
+      /*
+        
+
+            这部分代码是在遍历系统的接口地址（gv->interfaces）时，检查当前处理的单播地址是否与系统的外部接口地址相同。如果找到相同的外部接口地址，就将当前处理的地址转换为系统内部接口地址。
+在实际网络中，有时候同一台机器可能有多个网络接口，每个接口都有一个唯一的地址。外部接口地址通常是公共可路由的地址，
+而内部接口地址则可能是局域网地址。这个检查和转换的目的是确保在与其他机器通信时使用内部接口地址，而不是外部接口地址，以避免网络路由问题。
+假设一台机器有两个网络接口，一个连接到局域网（内部接口），另一个连接到互联网（外部接口）。
+
+内部接口地址（局域网）可能是：192.168.1.2
+外部接口地址（互联网）可能是：203.0.113.5
+如果这台机器想要与同一局域网内的其他机器通信，最好使用内部接口地址（192.168.1.2），因为这样的通信会更加直接和可靠，不需要经过路由器等设备。
+
+而如果这台机器要与互联网上的其他机器通信，可能需要使用外部接口地址（203.0.113.5），因为这是唯一能够从互联网上访问到这台机器的地址。
+
+在这个例子中，通过检查和转换地址，代码确保在处理单播地址时，使用内部接口地址与局域网内的机器通信，而使用外部接口地址与互联网上的机器通信。
+
+假设我们有以下网络设置：
+
+外部接口地址（互联网）：203.0.113.5
+
+外部接口子网掩码：255.255.255.0
+
+内部接口地址（局域网）：192.168.1.2
+
+内部接口子网掩码：255.255.255.0
+
+假设我们的目标是根据这些设置，将外部接口地址（203.0.113.5）转换为内部接口所在的子网，以确保在处理单播地址时使用局域网内的地址。
+
+代码中的这段部分就是实现这一目标的。
+
+首先，它检查当前地址是否不是自身的外部地址且是IPv4 UDP地址。如果是，而且外部地址掩码有效，那么它执行以下操作：
+
+从当前地址中提取 IPv4 地址的网络部分，即排除掉主机部分。
+获取自身内部接口的 IPv4 地址（ownip）和外部接口的 IPv4 地址（extip）以及外部接口的子网掩码（extmask）。
+判断当前地址是否位于与自身外部接口相同的子网中。
+如果是，将当前地址的网络部分替换为自身内部接口的 IPv4 地址的网络部分，实现了将外部地址转换为内部地址的操作。
+这样，通过检查并转换地址，代码确保在处理单播地址时，使用内部接口地址与局域网内的机器通信。
+
+
+外部接口地址（extip）: 203.0.113.5
+外部接口子网掩码（extmask）: 255.255.255.0
+内部接口地址（ownip）: 192.168.1.1
+现在有一个待处理的IPv4地址为 203.0.113.25。我们会按照上述步骤进行判断和转换：
+
+提取IPv4地址 203.0.113.25 的网络部分：
+
+markdown
+Copy code
+203.0.113.25     (IPv4地址)
+255.255.255.0    (子网掩码)
+----------------
+203.0.113.0      (网络部分)
+判断是否与自身外部接口在相同的子网中：
+
+由于网络部分 203.0.113.0 与外部接口地址的网络部分 203.0.113.5 相同，判断为真。
+如果判断为真，将当前地址的网络部分替换为自身内部接口的IPv4地址的网络部分：
+
+markdown
+Copy code
+192.168.1.1      (内部接口地址的网络部分)
+203.0.113.25     (原始IPv4地址)
+----------------
+192.168.1.25     (替换后的IPv4地址)
+在这个例子中，203.0.113.25 通过判断与自身外部接口在相同的子网中，然后将其网络部分替换为内部接口的IPv4地址的网络部分，最终转换为 192.168.1.25。这就是将外部地址转换为内部地址的操作。
+      */
       struct in_addr tmp4 = *((struct in_addr *) (loc.address + 12));
       const struct in_addr ownip = *((struct in_addr *) (gv->interfaces[0].loc.address + 12));
       const struct in_addr extip = *((struct in_addr *) (gv->interfaces[0].extloc.address + 12));
@@ -186,10 +268,10 @@ struct ddsi_addrset *ddsi_addrset_from_locatorlists (const struct ddsi_domaingv 
         memcpy (loc.address + 12, &tmp4, 4);
       }
     }
-
+  //将当前地址添加到地址集合
     addrset_from_locatorlists_add_one (gv, &loc, as, &intfs, &direct);
   }
-
+//如果地址集合为空且源地址不为空，则将源地址也添加到地址集合。
   if (ddsi_addrset_empty (as) && !ddsi_is_unspec_locator (srcloc))
   {
     //GVTRACE("add srcloc\n");
@@ -197,7 +279,7 @@ struct ddsi_addrset *ddsi_addrset_from_locatorlists (const struct ddsi_domaingv 
     //GVTRACE (" add-srcloc");
     addrset_from_locatorlists_add_one (gv, srcloc, as, &intfs, &direct);
   }
-
+//如果地址集合仍为空且存在继承的接口信息，则使用继承的接口信息。
   if (ddsi_addrset_empty (as) && inherited_intfs)
   {
     // implies no interfaces enabled in "intfs" yet -- just use whatever

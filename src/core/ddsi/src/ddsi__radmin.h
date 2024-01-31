@@ -48,6 +48,22 @@ struct ddsi_sequence_number_set_header;
 
 typedef int (*ddsi_dqueue_handler_t) (const struct ddsi_rsample_info *sampleinfo, const struct ddsi_rdata *fragchain, const struct ddsi_guid *rdguid, void *qarg);
 
+/**
+ * 
+ddsi_receiver_state： 包含接收器状态的结构体，其中包括源和目标GUID前缀、回复定位器、厂商ID、协议版本等信息。这是接收器的基本状态。
+
+ddsi_rsample_info： 包含接收到的样本信息，如序列号、接收器状态、代理写入器、样本大小、时间戳等。
+
+ddsi_rsample_chain_elem和ddsi_rsample_chain： 这两个结构体表示样本的链式结构。ddsi_rsample_chain_elem
+包含一个样本的片段链，以及指向下一个元素的指针。ddsi_rsample_chain则表示整个样本链。
+
+rsample_info → rsample_chain → rsample_chain_elem： 
+对接收到的样本的信息可以链接成一个样本链，其中每个元素由ddsi_rsample_chain_elem结构表示。
+*/
+//创建一个 ddsi_rsample 结构表示接收到的数据。该函数用于将接收到的数据碎片重新组装成完整的数据样本（rsample）
+
+
+
 struct ddsi_receiver_state {
   ddsi_guid_prefix_t src_guid_prefix;     /* 12 */
   ddsi_guid_prefix_t dst_guid_prefix;     /* 12 */

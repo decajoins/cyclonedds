@@ -37,6 +37,53 @@
 #include "ddsi__bitset.h"
 #include "ddsi__thread.h"
 
+
+
+/*
+这段描述了一个多线程环境中接收和处理网络数据包的系统。以下是详细解释：
+
+接收缓冲区（rbuf）： 每个接收线程都有一个接收缓冲区池（rbuf），每个缓冲区足够大，可以容纳多个网络数据包以及相关的管理数据。
+
+rmsg - 管理实体： 在向内核请求数据包之前，接收线程从缓冲区中分配一个rmsg。rmsg是代表原始数据包以及额外派生数据的管理实体。
+
+rdata - 数据表示： 在处理数据包时，为每个Data/DataFrag子消息创建一个rdata。这些rdata条目包含对rmsg的引用，并指定存储序列化有效载荷的数据包内的字节范围。
+
+sampleinfo - 样本元信息： 对于每个样本（序列号），分配了一个sampleinfo。该结构包含有关样本的各种元信息，包括时间戳、源地址以及根据DDSI规范的接收器状态的引用。
+
+分片处理（fragchain）： 对于分片数据，rdata条目被链接在一起形成一个fragchain。这个fragchain使用由sample.defrag指向的区间树。
+
+有序样本链（sample.reorder）： 已经以无序方式接收的完成样本被链接成连续样本链。这些样本链使用sample.reorder组织成一个区间树。
+
+引用计数和清理： 一旦样本被传递，其fragchain指向的rmsgs的引用计数会递减。最终，这将释放原始网络数据包的内存并在rbuf中回收空间。
+
+总体而言，该系统在多线程环境中高效地管理接收、处理和排序网络数据包。它包括处理分片数据的机制，为完成的样本保持顺序的能力，以及通过引用计数管理内存。使用区间树增强了组织和访问这些样本的效率。
+
+*/
+
+
+/**
+ * 
+ * rbufpool（接收缓冲池）： 包含一个或多个rbuf的池。每个rbuf是一个相对较大的缓冲区，用于接收多个UDP数据包和存储部分解码和索引信息。每个接收线程都有一个拥有自己rbufpool的池。
+
+rmsg（接收消息）： 在rbuf中的消息。每个rmsg包含一个引用计数，跟踪对该消息的所有引用。rmsg中包含原始UDP数据包、解码信息、rdata（表示Data/DataFrag子消息）以及用于消息重组和解碎的状态信息。
+
+rdata（数据片段）： 表示Data/DataFrag子消息的数据结构。rdata包含一些管理数据，指向消息中对应的部分，并由defragmentation（解碎）和reordering（重组）表以及传递队列引用。
+
+Defrag和Reorder： 分别是解碎和重组的操作。解碎用于处理分段传输的数据，而重组用于处理乱序接收的数据。代码中描述了如何使用这两种操作，以及它们的关系。
+
+Sequence of operations（操作序列）： 描述了一个接收线程的主要操作。线程接收数据并在rbuf中创建rmsg，然后对消息进行处理，最后将消息提交。一旦没有对消息的引用，就可以将其丢弃。
+
+处理过程中的引用计数： 在处理消息时，引用计数通过偏置值进行调整，以检测一些非法活动。引用计数偏置的目的是为了推迟对实际引用的计数，以便在处理所有reorder admins之后进行，从而节省更新次数。
+
+Gaps and Heartbeats： 代码描述了Gap和Heartbeat的处理过程。Gap表示数据的缺失范围，而Heartbeat表示心跳信息。这些信息通过defragmenting index进行修剪，并存储为重新排序索引中的特殊标记rdata的间隔。
+
+总的来说，这段代码实现了一种用于处理乱序接收和分段传输数据的机制，确保消息在内存中有序存储，以便后续处理。
+
+
+
+
+
+*/
 /* OVERVIEW ------------------------------------------------------------
 
    The receive path of DDSI has any number of receive threads that
@@ -500,6 +547,17 @@ static void *ddsi_rbuf_alloc (struct ddsi_rbufpool *rbp)
   assert (rb->freeptr >= rb->raw);
   assert (rb->freeptr <= rb->raw + rb->size);
 
+/**
+ * 这行代码是在检查当前接收缓冲区是否有足够的剩余空间来容纳新的接收消息。让我解释一下：
+
+rb->raw 是接收缓冲区的起始地址。
+rb->size 是接收缓冲区的总大小。
+rb->freeptr 是当前可用于分配的位置，即下一个消息可以放置的位置。
+(uint32_t) (rb->raw + rb->size - rb->freeptr) 计算的是从 freeptr 到缓冲区末尾的剩余空间的大小。
+因此，表达式 uint32_t) (rb->raw + rb->size - rb->freeptr) 表示当前接收缓冲区末尾的剩余空间的大小，单位是字节。接着，这个值与 asize（接收消息的最大大小，包括消息头）进行比较。
+
+整个条件 if ((uint32_t) (rb->raw + rb->size - rb->freeptr) < asize) 的含义是，如果当前接收缓冲区的剩余空间不足以容纳新的接收消息（包括消息头），则进入 if 语句的代码块。在这种情况下，需要获取一个新的接收缓冲区。
+*/
   if ((uint32_t) (rb->raw + rb->size - rb->freeptr) < asize)
   {
     /* not enough space left for new rmsg */
@@ -1322,21 +1380,6 @@ static int defrag_limit_samples (struct ddsi_defrag *defrag, ddsi_seqno_t seq, d
   }
   return 1;
 }
-
-
-/**
- * 
-ddsi_receiver_state： 包含接收器状态的结构体，其中包括源和目标GUID前缀、回复定位器、厂商ID、协议版本等信息。这是接收器的基本状态。
-
-ddsi_rsample_info： 包含接收到的样本信息，如序列号、接收器状态、代理写入器、样本大小、时间戳等。
-
-ddsi_rsample_chain_elem和ddsi_rsample_chain： 这两个结构体表示样本的链式结构。ddsi_rsample_chain_elem
-包含一个样本的片段链，以及指向下一个元素的指针。ddsi_rsample_chain则表示整个样本链。
-
-rsample_info → rsample_chain → rsample_chain_elem： 
-对接收到的样本的信息可以链接成一个样本链，其中每个元素由ddsi_rsample_chain_elem结构表示。
-*/
-//创建一个 ddsi_rsample 结构表示接收到的数据。该函数用于将接收到的数据碎片重新组装成完整的数据样本（rsample）
 
 
 /*
@@ -2614,9 +2657,9 @@ unsigned ddsi_reorder_nackmap (const struct ddsi_reorder *reorder, ddsi_seqno_t 
   base = reorder->next_seq;
 #else
   if (base > reorder->next_seq)
-  {
     DDS_CERROR (reorder->logcfg, "ddsi_reorder_nackmap: incorrect base sequence number supplied (%"PRIu64" > %"PRIu64")\n", base, reorder->next_seq);
     base = reorder->next_seq;
+  {
   }
 #endif
   if (maxseq + 1 < base)

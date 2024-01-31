@@ -209,34 +209,49 @@ void ddsi_tkmap_instance_ref (struct ddsi_tkmap_instance *tk)
   ddsrt_atomic_inc32 (&tk->m_refc);
 }
 
+//这段代码实现了对 ddsi_tkmap_instance 结构的引用计数减少的操作，确保在引用计数减少到 0 时，能够安全地从哈希表中移除实例并进行相关清理工作。
 void ddsi_tkmap_instance_unref (struct ddsi_tkmap *map, struct ddsi_tkmap_instance *tk)
 {
   uint32_t old, new;
   assert (ddsi_thread_is_awake ());
+  //如果引用计数为 1，表示当前是唯一的引用者，将新值设为 REFC_DELETE
   do {
+    //用于在多线程环境中以原子方式读取 32 位整数（uint32_t）的值
     old = ddsrt_atomic_ld32(&tk->m_refc);
     if (old == 1)
       new = REFC_DELETE;
+      //如果引用计数不为 1，则将新值设为当前值减 1，确保新值不包含 REFC_DELETE 标志。
     else
     {
       assert(!(old & REFC_DELETE));
       new = old - 1;
-    }
+    }//如果写入新值成功，则跳出自旋锁定循环。如果写入新值不成功，则重新读取引用计数值，继续自旋锁定。
+    /*
+    读取 tk->m_refc 的当前值。
+  尝试将 tk->m_refc 的当前值与 old 进行比较。
+  如果当前值等于 old，则将 tk->m_refc 的值更新为 new。
+  如果当前值不等于 old，则 CAS 操作失败，不进行更新。
+  这个操作是原子的，意味着在整个 CAS 操作期间，不会被其他线程中断，从而确保线程安全性。
+    */
   } while (!ddsrt_atomic_cas32(&tk->m_refc, old, new));
+  //如果新值等于 REFC_DELETE，表示引用计数减少到 0
   if (new == REFC_DELETE)
   {
     /* Remove from hash table */
+    //从哈希表中移除该实例，确保实例不再存在于哈希表中
     int removed = ddsrt_chh_remove(map->m_hh, tk);
     assert (removed);
     (void)removed;
 
     /* Signal any threads blocked in their retry loops in lookup */
+    //唤醒任何在查找中的被阻塞的线程，以便它们能够感知到哈希表中实例的移除
     ddsrt_mutex_lock(&map->m_lock);
     ddsrt_cond_broadcast(&map->m_cond);
     ddsrt_mutex_unlock(&map->m_lock);
 
     /* Schedule freeing of memory until after all those who may have found a pointer have
      progressed to where they no longer hold that pointer */
+     //将实例放入垃圾收集队列，以便在确保没有线程持有该实例指针后进行内存释放。
     gc_tkmap_instance(tk, map->gv->gcreq_queue);
   }
 }

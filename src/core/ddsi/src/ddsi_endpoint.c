@@ -586,6 +586,7 @@ int ddsi_writer_must_have_hb_scheduled (const struct ddsi_writer *wr, const stru
        heartbeats in the absence of data. */
     return 0;
   }
+  //否则，检查读者中的节点是否有任何一个节点未回复心跳，如果是，则返回 1，表示需要安排心跳
   else if (!((const struct ddsi_wr_prd_match *) ddsrt_avl_root_non_empty (&ddsi_wr_readers_treedef, &wr->readers))->all_have_replied_to_hb)
   {
     /* Labouring under the belief that heartbeats must be sent
@@ -869,6 +870,7 @@ static void ddsi_new_writer_guid_common_init (struct ddsi_writer *wr, const char
   else
   {
     struct ddsi_heartbeat_xevent_cb_arg arg = {.wr_guid = wr->e.guid };
+    //选择 DDSRT_MTIME_NEVER 作为调度时间可能符合心跳事件的行为特性，即不是按照定期的时间间隔发送，而是在特定条件下触发。这样可以更灵活地根据数据的状态和需求来处理心跳事件。
     wr->heartbeat_xevent = ddsi_qxev_callback (wr->evq, DDSRT_MTIME_NEVER, ddsi_heartbeat_xevent_cb, &arg, sizeof (arg), false);
   }
 

@@ -395,8 +395,10 @@ static enum ddsi_add_acknack_result get_acknack_info (const struct ddsi_proxy_wr
   if (result == AANR_ACK || result == AANR_SUPPRESSED_NACK)
   {
     // ACK and SUPPRESSED_NACK both end up being a pure ACK; send those only if we have to
+    //22）	如果有ACK或者NACK要回，首先判断heartbeat_since_ack和ack_requested，这两个变量均在handle_Heartbeat_helper赋值，主要判断该心跳是否为Final标志，如果其中之一置1，则不会回ACK消息，返回AANR_SUPPRESSED_ACK
     if (!(rwn->heartbeat_since_ack && rwn->ack_requested))
       result = AANR_SUPPRESSED_ACK; // writer didn't ask for it
+      //23）	如果本次回复的ACK的序列号比上一次还小，并且ackdelay_passed（本次心跳包时间-上一次回复ACK时间差<10ms，见步骤13分析），也不回复ACK报文
     else if (!(nack_summary->seq_base > rwn->last_nack.seq_base || ackdelay_passed))
       result = AANR_SUPPRESSED_ACK; // no progress since last, not enough time passed
   }
@@ -408,6 +410,11 @@ static enum ddsi_add_acknack_result get_acknack_info (const struct ddsi_proxy_wr
   }
   return result;
 }
+/*
+ddsi_sched_acknack_if_needed 是一个决策者，根据条件决定是否需要调度ACKNACK事件。
+make_and_resched_acknack 是执行者，生成ACKNACK消息，更新状态和计数，并可能重新调度下一个ACKNACK事件。
+*/
+
 
 //根据一系列条件来决定是否要调度 ACKNACK 事件，以及何时调度.函数的执行流程受到 ACK 和 NACK 的延迟时间配置的影响，确保在适当的时间触发 ACKNACK 事件。
 void ddsi_sched_acknack_if_needed (struct ddsi_xevent *ev, struct ddsi_proxy_writer *pwr, struct ddsi_pwr_rd_match *rwn, ddsrt_mtime_t tnow, bool avoid_suppressed_nack)
@@ -431,12 +438,15 @@ void ddsi_sched_acknack_if_needed (struct ddsi_xevent *ev, struct ddsi_proxy_wri
   // downside to being precise.
 
   struct ddsi_domaingv * const gv = pwr->e.gv;
+  //13）	Ackdelay_passed记录本次心跳包时间和上一次回复ACK时间间隔超过ack_delay(10ms)
+//14）	Nackdelay_passed记录本次心跳包时间和上一次回复NACK时间间隔是否超过nack_delay(100ms)
+
   const bool ackdelay_passed = (tnow.v >= ddsrt_mtime_add_duration (rwn->t_last_ack, gv->config.ack_delay).v);
   const bool nackdelay_passed = (tnow.v >= ddsrt_mtime_add_duration (rwn->t_last_nack, gv->config.nack_delay).v);
   struct ddsi_add_acknack_info info;
   struct ddsi_last_nack_summary nack_summary;
   const enum ddsi_add_acknack_result aanr =
-  //使用 get_acknack_info 函数获取 ACKNACK 信息，并根据结果来决定后续的操作。
+  //使用 get_acknack_info 函数获取 ACKNACK 信息，并根据结果来决定后续的操作。根据本次心跳包获取需要回复ACK还是NACK还是不回复
     get_acknack_info (pwr, rwn, &nack_summary, &info, ackdelay_passed, nackdelay_passed);
     //如果结果是 AANR_SUPPRESSED_ACK，则什么都不做，因为此时没有必要执行后续操作。
   if (aanr == AANR_SUPPRESSED_ACK)
@@ -717,6 +727,10 @@ void ddsi_acknack_xevent_cb (struct ddsi_domaingv *gv, struct ddsi_xevent *ev, s
   if (!pwr->have_seen_heartbeat)
     msg = make_preemptive_acknack (ev, pwr, rwn, tnow);
   else
+  //主要用于生成ACKNACK消息，以及更新相应的状态和计数。
+// 调用get_acknack_info函数获取ACKNACK信息，然后根据信息生成ACKNACK消息，包括可能的NACKFRAG信息。
+// 在生成ACKNACK消息后，更新相关的状态和计数，然后根据生成的消息大小决定是否继续执行后续操作。
+// 如果需要，重新调度下一个事件，通常是ACKNACK事件或NACK事件。
     msg = make_and_resched_acknack (ev, pwr, rwn, tnow, false);
   ddsrt_mutex_unlock (&pwr->e.lock);
 
