@@ -64,8 +64,8 @@ enum ddsi_recvips_mode {
 };
 
 enum ddsi_recv_thread_mode {
-  DDSI_RTM_SINGLE,
-  DDSI_RTM_MANY
+  DDSI_RTM_SINGLE,//单线程模式，即仅使用一个接收线程。
+  DDSI_RTM_MANY//多线程模式，即使用多个接收线程。
 };
 
 struct ddsi_recv_thread_arg {

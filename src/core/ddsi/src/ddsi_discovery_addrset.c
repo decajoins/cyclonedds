@@ -331,3 +331,67 @@ Copy code
   return as;
 }
 
+
+
+/*
+假设我们有以下配置和广告的定位器信息：
+
+域状态信息 gv 包含三个网络接口，分别是 Loopback 接口、Ethernet 接口1、Ethernet 接口2。
+广告的单播定位器列表 uc 包含两个定位器：LocatorA 和 LocatorB。
+广告的多播定位器列表 mc 包含一个定位器：MulticastLocator.
+配置和广告的定位器信息如下：
+
+c
+Copy code
+// 配置：三个网络接口
+struct ddsi_interface interfaces[3] = {
+    { .name = "Loopback", .loopback = true, .mc_capable = true },
+    { .name = "Ethernet1", .loopback = false, .mc_capable = true },
+    { .name = "Ethernet2", .loopback = false, .mc_capable = true }
+};
+
+// 域状态信息
+struct ddsi_domaingv gv = {
+    .n_interfaces = 3,
+    .interfaces = interfaces,
+    // 其他域状态信息的设置
+};
+
+// 广告的单播定位器列表
+ddsi_locators_t uc = {
+    .first = &LocatorA, // 第一个定位器
+    .next = &LocatorB,  // 第二个定位器
+    // 其他单播定位器的设置
+};
+
+// 广告的多播定位器列表
+ddsi_locators_t mc = {
+    .first = &MulticastLocator, // 唯一的多播定位器
+    // 其他多播定位器的设置
+};
+
+// 源地址
+ddsi_locator_t srcloc = {
+    .kind = DDSI_LOCATOR_KIND_UDPv4,
+    .address = "192.168.0.1", // 假设源地址是 IPv4 地址
+    // 其他源地址信息的设置
+};
+
+// 继承的接口集合
+ddsi_interface_set_t inherited_intfs = {
+    .xs = { true, false, true } // 仅使用 Loopback 和 Ethernet2 接口
+};
+基于上述情境，调用 ddsi_addrset_from_locatorlists 函数会按照代码逻辑执行以下步骤：
+
+初始化新的地址集 as 和接口集合 intfs。
+检查是否允许使用 Loopback 地址，并设置 allow_loopback。
+处理单播地址列表 uc，对于每个定位器，根据一些规则（如是否是 Loopback 地址、是否与自身地址相同等）进行处理，并通过 addrset_from_locatorlists_add_one 函数将符合条件的单播地址添加到地址集 as 中。
+如果地址集为空，且源地址 srcloc 不是未指定的地址，则将源地址添加到地址集中。
+如果地址集为空，且存在继承的接口集合 inherited_intfs，则使用该集合用于选择多播地址。
+处理多播地址列表 mc，对于每个定位器，根据接口集合和接口的多播能力选择合适的接口，并将多播地址添加到地址集 as 中。
+返回构建好的地址集 as。
+
+
+interface->loc->addrest
+*/
+

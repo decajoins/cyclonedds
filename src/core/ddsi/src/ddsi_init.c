@@ -223,6 +223,7 @@ static int set_recvips (struct ddsi_domaingv *gv)
         GVWARNING ("CycloneDDS/Domain/General/MulticastRecvNetworkInterfaceAddresses: using 'preferred' because of IPv6 local address\n");
       }
     }
+    //处理网络接收地址的情况下的一种情况
     else
     {
       struct ddsi_config_in_addr_node **recvnode = &gv->recvips;
@@ -231,24 +232,32 @@ static int set_recvips (struct ddsi_domaingv *gv)
       for (i = 0; gv->config.networkRecvAddressStrings[i] != NULL; i++)
       {
         ddsi_locator_t loc;
+        //将当前字符串解析为地址
         if (ddsi_locator_from_string(gv, &loc, gv->config.networkRecvAddressStrings[i], gv->m_factory) != AFSR_OK)
         {
           GVERROR ("%s: not a valid address in CycloneDDS/Domain/General/MulticastRecvNetworkInterfaceAddresses\n", gv->config.networkRecvAddressStrings[i]);
           return -1;
         }
+        //开始遍历系统中的网络接口。
         for (j = 0; j < gv->n_interfaces; j++)
         {
+          //检查解析的地址是否与当前遍历的网络接口的地址匹配。
           if (ddsi_compare_locators(&loc, &gv->interfaces[j].loc) == 0)
             break;
         }
+        //如果在网络接口列表中找不到与解析的地址匹配的接口，则输出错误消息并返回 -1。
         if (j == gv->n_interfaces)
         {
           GVERROR ("No interface bound to requested address '%s'\n", gv->config.networkRecvAddressStrings[i]);
           return -1;
         }
+        //为当前解析的地址分配内存以存储在链表节点中。
         *recvnode = ddsrt_malloc (sizeof (struct ddsi_config_in_addr_node));
+        //将解析的地址存储在链表节点中。
         (*recvnode)->loc = loc;
+        //将链表指针移动到下一个节点。
         recvnode = &(*recvnode)->next;
+        //将链表的下一个节点设置为空，以确保链表结尾。
         *recvnode = NULL;
       }
     }
@@ -1340,7 +1349,7 @@ int ddsi_init (struct ddsi_domaingv *gv)
       goto err_iceoryx;
   }
 #endif
-
+  // 如果当前接口不支持多播，则输出警告信息，并禁用多播功能。同时，确保发现可以正常工作，通过将参与者索引设置为自动。
   if (gv->config.allowMulticast)
   {
     for (int i = 0; i < gv->n_interfaces; i++)
@@ -1354,16 +1363,19 @@ int ddsi_init (struct ddsi_domaingv *gv)
          address set */
         gv->config.participantIndex = DDSI_PARTICIPANT_INDEX_AUTO;
       }
+      //如果允许多播配置为默认值，则根据网络接口类型来确定多播的行为。
       else if (gv->config.allowMulticast & DDSI_AMC_DEFAULT)
       {
         /* default is dependent on network interface type: if multicast is believed to be flaky,
          use multicast only for SPDP packets */
         assert ((gv->config.allowMulticast & ~DDSI_AMC_DEFAULT) == 0);
+        //如果当前网络接口被认为多播不稳定（flaky），则仅使用多播来发送 SPDP 数据包，并记录日志信息。
         if (gv->interfaces[i].mc_flaky)
         {
           gv->config.allowMulticast = DDSI_AMC_SPDP;
           GVLOG (DDS_LC_CONFIG, "presumed flaky multicast, use for SPDP only\n");
         }
+        //如果当前网络接口被认为支持多播，则允许用于所有类型的数据传输，并记录日志信息。
         else
         {
           GVLOG (DDS_LC_CONFIG, "presumed robust multicast support, use for everything\n");

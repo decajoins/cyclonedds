@@ -1352,19 +1352,23 @@ static void copy_addressing_info (struct ddsi_xpack *xp, const struct ddsi_xmsg 
       break;
   }
 }
-
+//用于比较消息包和消息的寻址信息是否一致
 static int addressing_info_eq_onesidederr (const struct ddsi_xpack *xp, const struct ddsi_xmsg *m)
-{
+{//首先检查消息包和消息的目标模式是否相同，如果不同，则返回 0，表示寻址信息不一致。
   if (xp->dstmode != m->dstmode)
     return 0;
+    //根据消息包的目标模式进行分支处理。
   switch (xp->dstmode)
-  {
+  {//：如果目标模式为未设置，这是一个不应该发生的情况，因此断言失败。
     case NN_XMSG_DST_UNSET:
       assert (0);
     case NN_XMSG_DST_ONE:
+    //如果目标模式为单播，比较消息包和消息的目标地址是否相同。如果相同，则返回 1，表示寻址信息一致；否则返回 0。
       return (memcmp (&xp->dstaddr.loc, &m->dstaddr.one.loc, sizeof (xp->dstaddr.loc)) == 0);
+      //如果目标模式为广播，调用 ddsi_addrset_eq_onesidederr 函数比较消息包和消息的目标地址集是否相同。如果相同，则返回 1，表示寻址信息一致；否则返回 0。
     case NN_XMSG_DST_ALL:
       return ddsi_addrset_eq_onesidederr (xp->dstaddr.all.as, m->dstaddr.all.as);
+      //：如果目标模式为组播，同样调用 ddsi_addrset_eq_onesidederr 函数比较目标地址集是否相同。
     case NN_XMSG_DST_ALL_UC:
       return ddsi_addrset_eq_onesidederr (xp->dstaddr.all_uc.as, m->dstaddr.all_uc.as);
   }
@@ -1388,27 +1392,31 @@ static int ddsi_xmsg_is_rexmit (const struct ddsi_xmsg *m)
 
 static int ddsi_xpack_mayaddmsg (const struct ddsi_xpack *xp, const struct ddsi_xmsg *m, const uint32_t flags)
 {
+  //检查消息包是否包含重传消息，或者待添加的消息是否是重传消息。
   const bool rexmit = xp->includes_rexmit || ddsi_xmsg_is_rexmit (m);
+  //根据是否包含重传消息，选择适当的最大消息大小。
   const unsigned max_msg_size = rexmit ? xp->gv->config.max_rexmit_msg_size : xp->gv->config.max_msg_size;
   unsigned payload_size;
-
+  //如果消息包中没有 IO 向量，则返回 1，表示可以添加消息。
   if (xp->niov == 0)
     return 1;
+    //确保消息包中包含至少一个消息。
   assert (xp->included_msgs.latest != NULL);
+  //如果将要添加的消息的 IO 向量数与消息包中已有的 IO 向量数之和超过了最大 IO 向量数限制，则返回 0，表示无法添加消息。
   if (xp->niov + DDSI_XMSG_MAX_SUBMESSAGE_IOVECS > DDSI_XMSG_MAX_MESSAGE_IOVECS)
     return 0;
-
+  //如果待添加的消息包含有效负载，则计算有效负载的大小。
   payload_size = m->refd_payload ? (unsigned) m->refd_payload_iov.iov_len : 0;
 
   /* Check if max message size exceeded */
-
+  //检查消息包的总长度是否超过了最大消息大小:如果总长度超过了最大消息大小，则返回 0，表示无法添加消息。
   if (xp->msg_len.length + m->sz + payload_size > max_msg_size)
   {
     return 0;
   }
 
   /* Check if different call semantics */
-
+  //检查待添加消息的调用标志是否与消息包的调用标志相同。如果不同，则返回 0，表示无法添加消息。
   if (xp->call_flags != flags)
   {
     return 0;
@@ -1419,10 +1427,11 @@ static int ddsi_xpack_mayaddmsg (const struct ddsi_xpack *xp, const struct ddsi_
   if (xp->sec_info.use_rtps_encoding != m->sec_info.use_rtps_encoding)
     return 0;
 #endif
-
+  //最后，调用 addressing_info_eq_onesidederr 函数，检查消息包和待添加消息的寻址信息是否一致。如果一致，则返回 1，表示可以添加消息；否则返回 0，表示无法添加消息。
   return addressing_info_eq_onesidederr (xp, m);
 }
-
+//4）	如果sample成功插入whc（或者在best effort时不做任何操作）后，将数据加入发送链表。
+//每一个msg对应nn_msg结构体，xpack实际没有需要发送数据的链表，只是一个iov的结构体数组，将需要发送的数据实际的地址放到iov结构体中，最终通过send_msg一次将多个缓存的数据一包发出去。
 int ddsi_xpack_addmsg (struct ddsi_xpack *xp, struct ddsi_xmsg *m, const uint32_t flags)
 {
   /* Returns > 0 if pack got sent out before adding m */

@@ -159,6 +159,7 @@ static ssize_t ddsi_udp_conn_write (struct ddsi_tran_conn * conn_cmn, const ddsi
   union addr dstaddr;
   assert (niov <= INT_MAX);
   ddsi_ipaddr_from_loc (&dstaddr.x, dst);
+  //构建消息头结构 msg，包含了目标地址、数据块数组等信息。
   ddsrt_msghdr_t msg = {
     .msg_name = &dstaddr.x,
     .msg_namelen = (socklen_t) ddsrt_sockaddr_get_size (&dstaddr.a),
@@ -174,6 +175,7 @@ static ssize_t ddsi_udp_conn_write (struct ddsi_tran_conn * conn_cmn, const ddsi
 #if MSG_NOSIGNAL && !LWIP_SOCKET
   sendflags |= MSG_NOSIGNAL;
 #endif
+//执行 ddsi_sendmsg 函数发送消息，并将返回的结果存储在 rc 中。
   rc = ddsrt_sendmsg (conn->m_sock, &msg, sendflags, &nsent);
   if (rc != DDS_RETCODE_OK)
   {
@@ -207,7 +209,7 @@ static ssize_t ddsi_udp_conn_write (struct ddsi_tran_conn * conn_cmn, const ddsi
       rc = ddsrt_sendmsg (conn->m_sock, &msg, sendflags, &nsent);
     }
   }
-
+  //如果发送成功且开启了网络抓包功能（通过 gv->pcap_fp），则记录发送的数据包信息到抓包文件中
   if (nsent > 0 && gv->pcap_fp)
   {
     union addr sa;
@@ -251,11 +253,17 @@ static bool ddsi_udp_supports (const struct ddsi_tran_factory *fact_cmn, int32_t
 
 static int ddsi_udp_conn_locator (struct ddsi_tran_factory * fact_cmn, struct ddsi_tran_base * conn_cmn, ddsi_locator_t *loc)
 {
+  //将传入的通用传输工厂指针 fact_cmn 转换为 UDP 传输工厂指针 fact，用于访问 UDP 传输工厂的特定信息。
+  //将传入的通用连接指针 conn_cmn 转换为 UDP 连接指针 conn，用于访问 UDP 连接的特定信息。
   struct ddsi_udp_tran_factory const * const fact = (const struct ddsi_udp_tran_factory *) fact_cmn;
   ddsi_udp_conn_t conn = (ddsi_udp_conn_t) conn_cmn;
   int ret = -1;
   if (conn->m_sock != DDSRT_INVALID_SOCKET)
   {
+    //如果 UDP 连接的套接字有效 (m_sock != DDSRT_INVALID_SOCKET)，则进行如下操作：
+    // 设置定位器的类型为工厂中定义的类型 (loc->kind = fact->m_kind)。
+    // 设置定位器的端口为连接的端口号 (loc->port = conn->m_base.m_base.m_port)。
+    // 复制连接所在的地址信息到定位器中 (memcpy (loc->address, conn->m_base.m_base.gv->interfaces[0].loc.address, sizeof (loc->address)))。
     loc->kind = fact->m_kind;
     loc->port = conn->m_base.m_base.m_port;
     memcpy (loc->address, conn->m_base.m_base.gv->interfaces[0].loc.address, sizeof (loc->address));
@@ -298,6 +306,12 @@ static dds_return_t set_dont_route (struct ddsi_domaingv const * const gv, ddsrt
   return rc;
 }
 
+/*
+首先，根据配置和默认值，确定要设置的缓冲区大小。然后，使用 getsockopt 函数获取当前的套接字缓冲区大小，并检查是否能够成功获取。
+如果获取失败，可能是因为操作系统不支持获取特定套接字选项，此时会记录日志并返回 DDS_RETCODE_OK 表示操作完成。
+
+接下来，如果要求总是设置大小，或者当前缓冲区大小小于要求的大小，就会调用 setsockopt 函数来设置缓冲区大小。然后再次调用 getsockopt 函数来获取实际设置的缓冲区大小，并检查是否设置成功。最后根据实际情况记录日志，并返回相应的状态码。
+*/
 static dds_return_t set_socket_buffer (struct ddsi_domaingv const * const gv, ddsrt_socket_t sock, int32_t socket_option, const char *socket_option_name, const char *name, const struct ddsi_config_socket_buf_size *config, uint32_t default_min_size)
 {
   // if (min, max)=   and   initbuf=   then  request=  and  result=
@@ -367,6 +381,14 @@ static dds_return_t set_socket_buffer (struct ddsi_domaingv const * const gv, dd
   return (rc < 0) ? rc : (actsize > (uint32_t) INT32_MAX) ? INT32_MAX : (int32_t) actsize;
 }
 
+/*
+failed to increase socket receive buffer size to 1048576 bytes, continuing with 425984 bytes
+这条日志消息表明在尝试将套接字的接收缓冲区大小增加到 1,048,576 字节时失败了，最终设置的大小是 425,984 字节。这可能是由于操作系统或网络堆栈的限制，导致无法将缓冲区大小设置为所请求的大小。因此，系统最终采用了比请求的大小更小的值。
+*/
+
+/*
+接收缓冲区大小为 1,048,576 字节（即 1 MB），发送缓冲区大小为 65,536 字节（即 64 KB）。
+*/
 static dds_return_t set_rcvbuf (struct ddsi_domaingv const * const gv, ddsrt_socket_t sock, const struct ddsi_config_socket_buf_size *config)
 {
   return set_socket_buffer (gv, sock, SO_RCVBUF, "SO_RCVBUF", "receive", config, 1048576);
@@ -448,7 +470,9 @@ static dds_return_t set_mc_options_transmit_ipv4 (struct ddsi_domaingv const * c
 
 static dds_return_t ddsi_udp_create_conn (struct ddsi_tran_conn **conn_out, struct ddsi_tran_factory * fact_cmn, uint32_t port, const struct ddsi_tran_qos *qos)
 {
+   // 将传输工厂转换为 UDP 传输工厂
   struct ddsi_udp_tran_factory *fact = (struct ddsi_udp_tran_factory *) fact_cmn;
+  // 获取领域全局变量和网络接口信息
   struct ddsi_domaingv const * const gv = fact->fact.gv;
   struct ddsi_network_interface const * const intf = qos->m_interface ? qos->m_interface : &gv->interfaces[0];
 
@@ -456,27 +480,31 @@ static dds_return_t ddsi_udp_create_conn (struct ddsi_tran_conn **conn_out, stru
   ddsrt_socket_t sock;
   bool reuse_addr = false, bind_to_any = false, ipv6 = false, set_mc_xmit_options = false;
   const char *purpose_str = NULL;
-
+  // 根据传输 QoS 的目的设置套接字选项
   switch (qos->m_purpose)
   {
+     // 发送单播数据
     case DDSI_TRAN_QOS_XMIT_UC:
       reuse_addr = false;
       bind_to_any = false;
       set_mc_xmit_options = false;
       purpose_str = "transmit(uc)";
       break;
+      // 发送单播和多播数据
     case DDSI_TRAN_QOS_XMIT_MC:
       reuse_addr = false;
       bind_to_any = false;
       set_mc_xmit_options = true;
       purpose_str = "transmit(uc/mc)";
       break;
+        // 接收单播数据
     case DDSI_TRAN_QOS_RECV_UC:
       reuse_addr = false;
       bind_to_any = true;
       set_mc_xmit_options = false;
       purpose_str = "unicast";
       break;
+       // 接收多播数据
     case DDSI_TRAN_QOS_RECV_MC:
       reuse_addr = true;
       bind_to_any = true;
@@ -486,7 +514,9 @@ static dds_return_t ddsi_udp_create_conn (struct ddsi_tran_conn **conn_out, stru
   }
   assert (purpose_str != NULL);
 
+ // 定义套接字地址结构体
   union addr socketname;
+    // 获取包含端口信息的本地地址
   ddsi_locator_t ownloc_w_port = intf->loc;
   assert (ownloc_w_port.port == DDSI_LOCATOR_PORT_INVALID);
   if (port) {
@@ -494,6 +524,7 @@ static dds_return_t ddsi_udp_create_conn (struct ddsi_tran_conn **conn_out, stru
     ownloc_w_port.port = port;
   }
   ddsi_ipaddr_from_loc (&socketname.x, &ownloc_w_port);
+   // 根据套接字类型设置 IP 地址
   switch (fact->m_kind)
   {
     case DDSI_LOCATOR_KIND_UDPv4:
@@ -512,12 +543,13 @@ static dds_return_t ddsi_udp_create_conn (struct ddsi_tran_conn **conn_out, stru
     default:
       DDS_FATAL ("ddsi_udp_create_conn: unsupported kind %"PRId32"\n", fact->m_kind);
   }
+   //设置套接字选项
   if ((rc = ddsrt_socket (&sock, socketname.a.sa_family, SOCK_DGRAM, 0)) != DDS_RETCODE_OK)
   {
     GVERROR ("ddsi_udp_create_conn: failed to create socket: %s\n", dds_strretcode (rc));
     goto fail;
   }
-
+ // 如果允许地址重用，则设置套接字选项
   if (reuse_addr && (rc = ddsrt_setsockreuse (sock, true)) != DDS_RETCODE_OK) {
     if (rc != DDS_RETCODE_UNSUPPORTED) {
       GVERROR ("ddsi_udp_create_conn: failed to enable port reuse: %s\n", dds_strretcode(rc));
@@ -529,7 +561,7 @@ static dds_return_t ddsi_udp_create_conn (struct ddsi_tran_conn **conn_out, stru
       GVLOG (DDS_LC_CONFIG, "ddsi_udp_create_conn: port reuse not supported by network stack\n");
     }
   }
-
+ // 设置接收缓冲区大小
   if ((rc = set_rcvbuf (gv, sock, &gv->config.socket_rcvbuf_size)) < 0)
     goto fail_w_socket;
   if (rc > 0) {
@@ -541,12 +573,14 @@ static dds_return_t ddsi_udp_create_conn (struct ddsi_tran_conn **conn_out, stru
         break;
     } while (!ddsrt_atomic_cas32 (&fact->receive_buf_size, old, (uint32_t) rc));
   }
-
+ // 设置发送缓冲区大小
   if (set_sndbuf (gv, sock, &gv->config.socket_sndbuf_size) < 0)
     goto fail_w_socket;
+    
+  // 如果配置了不使用路由，则设置套接字选项
   if (gv->config.dontRoute && set_dont_route (gv, sock, ipv6) != DDS_RETCODE_OK)
     goto fail_w_socket;
-
+  // 将套接字绑定到本地地址
   if ((rc = ddsrt_bind (sock, &socketname.a, ddsrt_sockaddr_get_size (&socketname.a))) != DDS_RETCODE_OK)
   {
     /* PRECONDITION_NOT_MET (= EADDRINUSE) is expected if reuse_addr isn't set, should be handled at
@@ -571,6 +605,9 @@ static dds_return_t ddsi_udp_create_conn (struct ddsi_tran_conn **conn_out, stru
       goto fail_w_socket;
   }
 
+/*
+先，如果需要设置多播传输选项 (set_mc_xmit_options)，则调用相应的函数设置 IPv4 或 IPv6 的多播选项。如果设置失败，则立即跳转到失败处理代码块 fail_w_socket。
+*/
   ddsi_udp_conn_t conn = ddsrt_malloc (sizeof (*conn));
   memset (conn, 0, sizeof (*conn));
 

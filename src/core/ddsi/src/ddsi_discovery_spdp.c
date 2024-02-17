@@ -83,6 +83,7 @@ static bool locators_add_one (struct locators_builder *b, const ddsi_locator_t *
   return true;
 }
 
+//用于获取参与者（Participant）内置主题数据的函数 ddsi_get_participant_builtin_topic_data。该函数的作用是根据给定的参与者信息，构建参与者的内置主题数据，并填充到目标数据结构中。
 void ddsi_get_participant_builtin_topic_data (const struct ddsi_participant *pp, ddsi_plist_t *dst, struct ddsi_participant_builtin_topic_data_locators *locs)
 {
   struct ddsi_domaingv * const gv = pp->e.gv;
@@ -245,6 +246,8 @@ int ddsi_spdp_write (struct ddsi_participant *pp)
     return 0;
   }
 
+//ddsi_builtintopic_write_endpoint 
+// 用于获取参与者（Participant）内置主题数据的函数 ddsi_get_participant_builtin_topic_data。该函数的作用是根据给定的参与者信息，构建参与者的内置主题数据，并填充到目标数据结构中。
   ddsi_get_participant_builtin_topic_data (pp, &ps, &locs);
   return ddsi_write_and_fini_plist (wr, &ps, true);
 }
@@ -289,6 +292,7 @@ struct ddsi_spdp_directed_xevent_cb_arg {
   ddsi_guid_prefix_t dest_proxypp_guid_prefix;
 };
 
+
 static bool resend_spdp_sample_by_guid_key (struct ddsi_writer *wr, const ddsi_guid_t *guid, struct ddsi_proxy_reader *prd)
 {
   /* Look up data in (transient-local) WHC by key value -- FIXME: clearly
@@ -300,12 +304,15 @@ static bool resend_spdp_sample_by_guid_key (struct ddsi_writer *wr, const ddsi_g
   ddsi_plist_init_empty (&ps);
   ps.present |= PP_PARTICIPANT_GUID;
   ps.participant_guid = *guid;
+  //使用 ps 中的参与者GUID创建一个序列化数据结构 sd，该序列化数据结构表示了要重新发送的SPDP样本。
   struct ddsi_serdata *sd = ddsi_serdata_from_sample (gv->spdp_type, SDK_KEY, &ps);
   ddsi_plist_fini (&ps);
   struct ddsi_whc_borrowed_sample sample;
 
   ddsrt_mutex_lock (&wr->e.lock);
+  ////接下来，调用 ddsi_whc_borrow_sample_key 函数来从写入者的历史缓存（WHC）中查找具有相同关键值（GUID）的样本。
   sample_found = ddsi_whc_borrow_sample_key (wr->whc, sd, &sample);
+  //如果找到了样本，则将其标记为新样本而不是重传，以避免触发重传限制。
   if (sample_found)
   {
     /* Claiming it is new rather than a retransmit so that the rexmit
@@ -407,7 +414,7 @@ void ddsi_spdp_broadcast_xevent_cb (struct ddsi_domaingv *gv, struct ddsi_xevent
 
   if (!get_pp_and_spdp_wr (gv, &arg->pp_guid, &pp, &spdp_wr))
     return;
-
+  //回调函数尝试重新发送 SPDP 样本（Sample），以确保其他参与者可以继续发现当前参与者。这是通过调用 resend_spdp_sample_by_guid_key 函数来完成的。
   if (!resend_spdp_sample_by_guid_key (spdp_wr, &arg->pp_guid, NULL))
   {
 #ifndef NDEBUG
@@ -425,6 +432,7 @@ void ddsi_spdp_broadcast_xevent_cb (struct ddsi_domaingv *gv, struct ddsi_xevent
     ddsrt_mutex_unlock (&pp->e.lock);
 #endif
   }
+  //回调函数调用 resched_spdp_broadcast 函数，以重新安排下一次 SPDP 广播事件的触发时间。这是为了确保 SPDP 广播能够持续进行，以便其他参与者能够及时发现当前参与者。
 
   resched_spdp_broadcast (ev, pp, tnow);
 }

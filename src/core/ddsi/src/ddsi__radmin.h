@@ -265,3 +265,15 @@ void ddsi_reorder_stats (struct ddsi_reorder *reorder, uint64_t *discarded_bytes
 #endif
 
 #endif /* DDSI__RADMIN_H */
+
+/*
+ddsi_defrag_iv：用于表示数据重组过程中的一个区间，包含最小值和最大值，以及指向该区间中第一个和最后一个数据片段的指针。
+
+ddsi_rsample：用于表示一个样本，其中包含两种用途的联合体。在重组模式下，它包含了一个区间树（fragtree）和一些其他的信息，例如最后一个片段（lastfrag）、样本信息（sampleinfo）和序列号（seq）。
+              在重新排序模式下，它包含了一些与重新排序相关的信息。
+
+ddsi_defrag：用于管理数据重组过程的结构体，包含了样本树（sampletree）、最大样本指针（max_sample）、样本数量、最大样本数量、丢弃模式、丢弃的字节数、日志配置和跟踪标志等信息。
+
+
+ddsi_rsample_chain_elem 和 ddsi_rsample_chain：用于表示重新排序过程中的样本链，其中链元素包含了指向片段链的指针、下一个链元素的指针和样本信息。
+*/

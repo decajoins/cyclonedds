@@ -31,6 +31,15 @@ enum ddsi_serdata_kind {
   SDK_DATA
 };
 
+/*
+Ops：数据序列化方法的指针，提供所有序列化需要的方法，目前有两个版本CDR1和CDR2，然后分为带key还是no_key，目前我们使用的序列化方法一般是CDR1+NO KEY
+Hash: 不带key的sample该值为ddsi_serdata_ops指针的MD5值，如果有key，则根据具体的key值来计算
+Refc：记录数列话数据引用计数，当引用计数为0时才释放内存（实际在引用计数为0时将申请的内存push到bufpool指定的freelist）
+Kind：序列化数据的类型，分为KEY还是DATA，正常数据序列化都为DATA
+Type：数据序列化对应的sertype，一个topic对应一个序列化方法，也即对应不同的IDL描述
+Timestamp：数据序列化的时间，一般使用write的时间，即调用dds_write的时间
+
+*/
 struct ddsi_serdata {
   const struct ddsi_serdata_ops *ops; /* cached from type->serdata_ops */
   uint32_t hash;
@@ -229,8 +238,10 @@ DDS_INLINE_EXPORT inline struct ddsi_serdata *ddsi_serdata_ref (const struct dds
 }
 
 /** @component typesupport_if */
+//判断检查引用计数是否已经减少为 1。如果引用计数减少为 1，说明当前函数是最后一个引用 serdata 的地方。
 DDS_INLINE_EXPORT inline void ddsi_serdata_unref (struct ddsi_serdata *serdata) {
   if (ddsrt_atomic_dec32_ov (&serdata->refc) == 1)
+  //如果引用计数减少为 1，则调用序列化数据的操作函数 ops 中的 free 函数，用于释放 serdata 所占用的资源
     serdata->ops->free (serdata);
 }
 

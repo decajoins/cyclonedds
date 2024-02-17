@@ -62,6 +62,7 @@ static dds_return_t dds_read_impl (bool take, dds_entity_t reader_or_condition, 
   struct ddsi_thread_state * const thrst = ddsi_lookup_thread_state ();
   ddsi_thread_state_awake (thrst, &entity->m_domain->gv);
 
+//分配数据缓冲区，并根据需要从缓存中提取或重新分配样本。
   /* Allocate samples if not provided (assuming all or none provided) */
   if (buf[0] == NULL)
   {
@@ -101,11 +102,12 @@ static dds_return_t dds_read_impl (bool take, dds_entity_t reader_or_condition, 
 
   /* read/take resets data available status -- must reset before reading because
      the actual writing is protected by RHC lock, not by rd->m_entity.m_lock */
+     //重置数据可用状态，并在必要时重置读取器的状态。
   const uint32_t sm_old = dds_entity_status_reset_ov (&rd->m_entity, DDS_DATA_AVAILABLE_STATUS);
   /* reset DATA_ON_READERS status on subscriber after successful read/take if materialized */
   if (sm_old & (DDS_DATA_ON_READERS_STATUS << SAM_ENABLED_SHIFT))
     dds_entity_status_reset (rd->m_entity.m_parent, DDS_DATA_ON_READERS_STATUS);
-
+//调用相应的 dds_rhc_take 或 dds_rhc_read 函数执行实际的读取或取出操作
   if (take)
     ret = dds_rhc_take (rd->m_rhc, lock, buf, si, maxs, mask, hand, cond);
   else
@@ -114,6 +116,7 @@ static dds_return_t dds_read_impl (bool take, dds_entity_t reader_or_condition, 
   /* if no data read, restore the state to what it was before the call, with the sole
      exception of holding on to a buffer we just allocated and that is pointed to by
      rd->m_loan */
+     //根据读取或取出操作的结果，进行适当的清理工作，例如释放内存或重置数据状态。最后，解除对数据读取器或条件的钉住，并返回操作的结果。
   if (ret <= 0 && nodata_cleanups)
   {
     ddsrt_mutex_lock (&rd->m_entity.m_mutex);

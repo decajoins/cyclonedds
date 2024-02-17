@@ -419,6 +419,24 @@ make_and_resched_acknack 是执行者，生成ACKNACK消息，更新状态和计
 //根据一系列条件来决定是否要调度 ACKNACK 事件，以及何时调度.函数的执行流程受到 ACK 和 NACK 的延迟时间配置的影响，确保在适当的时间触发 ACKNACK 事件。
 void ddsi_sched_acknack_if_needed (struct ddsi_xevent *ev, struct ddsi_proxy_writer *pwr, struct ddsi_pwr_rd_match *rwn, ddsrt_mtime_t tnow, bool avoid_suppressed_nack)
 {
+  /*
+  这段注释解释了一段相对精确的代码，用于确定ACKNACK事件的行为。该代码考虑了多种情况，以确定是否需要重新安排ACKNACK事件。与此相反，另一种方法是通过简化逻辑来更积极地安排事件，然后在事件处理程序中抑制不必要的消息。
+
+具体而言，相对精确的代码通过比较各种条件来决定是否需要重新安排ACKNACK事件。它考虑了以下情况：
+
+获取源信息以确定ACKNACK事件的基本位图和序列号范围。
+比较位图的基本序列号与读者的最后序列号以确定是否需要重新安排事件。
+检查写者是否请求了ACKNACK以及自上次ACKNACK事件以来是否已发送心跳并且已请求ACKNACK。
+检查是否自上次事件以来没有进展并且还没有足够的时间经过。
+根据上述条件，决定是否重新安排ACKNACK事件。
+相对精确的方法考虑了更多情况，并且在需要时更积极地安排事件。尽管有一些额外的开销，但它能够更精确地确定何时需要重新安排ACKNACK事件。相比之下，简化版本的方法更加激进，会更频繁地安排事件，但在事件处理程序中会抑制不必要的消息，因此它会更快地响应变化，但可能会产生一些不必要的事件。
+
+
+
+
+
+
+  */
   // This is the relatively expensive and precise code to determine what the ACKNACK event will do,
   // the alternative is to do:
   //
@@ -635,8 +653,10 @@ static dds_duration_t preemptive_acknack_interval (const struct ddsi_pwr_rd_matc
 static struct ddsi_xmsg *make_preemptive_acknack (struct ddsi_xevent *ev, struct ddsi_proxy_writer *pwr, struct ddsi_pwr_rd_match *rwn, ddsrt_mtime_t tnow)
 {
   const dds_duration_t old_intv = preemptive_acknack_interval (rwn);
+  //通过比较当前时间tnow与上次发送ACKNACK消息的时间加上旧的间隔时间old_intv之和，来确定是否已经到了发送新的ACKNACK消息的时间。
   if (tnow.v < ddsrt_mtime_add_duration (rwn->t_last_ack, old_intv).v)
   {
+    //然后，检查当前时间tnow是否已经超过了上次发送ACKNACK消息的时间加上旧的间隔时间old_intv。如果未超过，则将事件重新安排到下一次发送ACKNACK消息的时间，并返回NULL。
     (void) ddsi_resched_xevent_if_earlier (ev, ddsrt_mtime_add_duration (rwn->t_last_ack, old_intv));
     return NULL;
   }
@@ -649,7 +669,7 @@ static struct ddsi_xmsg *make_preemptive_acknack (struct ddsi_xevent *ev, struct
     if (rd)
       pp = rd->c.pp;
   }
-
+//如果当前时间已经超过了预先发送ACKNACK消息的时间，则创建新的ACKNACK消息。创建过程包括初始化消息，并设置消息的目标代理写者和读者，填充ACKNACK消息的相关信息，如读者ID、写者ID、序列号状态等。
   struct ddsi_xmsg *msg;
   if ((msg = ddsi_xmsg_new (gv->xmsgpool, &rwn->rd_guid, pp, DDSI_ACKNACK_SIZE_MAX, DDSI_XMSG_KIND_CONTROL)) == NULL)
   {
@@ -677,6 +697,7 @@ static struct ddsi_xmsg *make_preemptive_acknack (struct ddsi_xevent *ev, struct
   (void) ddsi_resched_xevent_if_earlier (ev, ddsrt_mtime_add_duration (rwn->t_last_ack, new_intv));
 
   // numbits is always 0 here, so need to print the bitmap
+  //最后，更新读者上次发送ACKNACK消息的时间，计算新的预先发送ACKNACK消息的间隔时间，并将事件重新安排到下一次发送ACKNACK消息的时间。同时打印日志以记录生成的ACKNACK消息的相关信息
   ETRACE (pwr, "acknack "PGUIDFMT" -> "PGUIDFMT": #%"PRIu32":%"PRId64"/%"PRIu32":\n",
           PGUID (rwn->rd_guid), PGUID (pwr->e.guid), *countp,
           ddsi_from_seqno (an->readerSNState.bitmap_base), an->readerSNState.numbits);

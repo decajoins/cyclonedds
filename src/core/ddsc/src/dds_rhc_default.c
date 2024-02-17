@@ -2230,24 +2230,31 @@ static bool read_take_to_invsample_ref (const struct ddsi_sertype * __restrict t
 
 static int32_t read_w_qminv_inst (struct dds_rhc_default * const __restrict rhc, struct rhc_instance * const __restrict inst, void * __restrict * __restrict values, dds_sample_info_t * __restrict info_seq, const int32_t max_samples, const uint32_t qminv, const dds_querycond_mask_t qcmask, read_take_to_sample_t to_sample, read_take_to_invsample_t to_invsample)
 {
+  //assert(max_samples > 0);：确保要取出的最大样本数量大于零。
   assert (max_samples > 0);
+  //（1）	如果数据实例为空或者数据实例的质量掩码与最小服务质量不匹配，则无法从该实例中取出数据，直接返回0
   if (inst_is_empty (inst) || (qmask_of_inst (inst) & qminv) != 0)
   {
     /* no samples present, or the instance/view state doesn't match */
     return 0;
   }
-
+//定义前后触发器信息。
   struct trigger_info_pre pre;
   struct trigger_info_post post;
+  //定义质量条件触发器信息。
   struct trigger_info_qcond trig_qc;
   const uint32_t nread = inst_nread (inst);
+  //初始化取出的样本数量为0。
   int32_t n = 0;
+  //初始化质量条件触发器信息。
   get_trigger_info_pre (&pre, inst);
   init_trigger_info_qcond (&trig_qc);
 
   /* any valid samples precede a possible invalid sample */
+  //遍历数据实例中的样本，对每个样本进行质量掩码和内容谓词的匹配，满足条件则取出数据并更新相关状态。
   if (inst->latest)
   {
+    //获取最新样本。
     struct rhc_sample *sample = inst->latest->next, * const end1 = sample;
     do {
       if ((qmask_of_sample (sample) & qminv) == 0 && (qcmask == 0 || (sample->conds & qcmask)))
@@ -2306,23 +2313,27 @@ static int32_t read_w_qminv_inst (struct dds_rhc_default * const __restrict rhc,
   return n;
 }
 
+//qminv：最小服务质量的掩码，用于选择要获取的样本。
+//qcmask：查询条件的掩码，用于过滤样本。
+//用于从数据实例中获取样本，并根据条件进行过滤和处理。它遍历实例中的样本，检查每个样本的质量和条件，然后将符合条件的样本复制到输出参数中。
 static int32_t take_w_qminv_inst (struct dds_rhc_default * const __restrict rhc, struct rhc_instance * __restrict * __restrict instptr, void * __restrict * __restrict values, dds_sample_info_t * __restrict info_seq, const int32_t max_samples, const uint32_t qminv, const dds_querycond_mask_t qcmask, read_take_to_sample_t to_sample, read_take_to_invsample_t to_invsample)
 {
   struct rhc_instance *inst = *instptr;
   assert (max_samples > 0);
+  //检查数据实例是否为空，或者实例的质量掩码是否与最小服务质量匹配。如果是，则表示没有样本可取，直接返回0。
   if (inst_is_empty (inst) || (qmask_of_inst (inst) & qminv) != 0)
   {
     /* no samples present, or the instance/view state doesn't match */
     return 0;
   }
-
+//定义用于触发器的前置信息、后置信息和条件信息，并初始化这些信息。
   struct trigger_info_pre pre;
   struct trigger_info_post post;
   struct trigger_info_qcond trig_qc;
   int32_t n = 0;
   get_trigger_info_pre (&pre, inst);
   init_trigger_info_qcond (&trig_qc);
-
+//如果数据实例中存在最新的样本（通过inst->latest指针），则开始遍历该实例中的样本，最多取出max_samples个样本。nvsamples记录了实例中样本的数量。
   if (inst->latest)
   {
     struct rhc_sample *psample = inst->latest;
@@ -2330,12 +2341,14 @@ static int32_t take_w_qminv_inst (struct dds_rhc_default * const __restrict rhc,
     uint32_t nvsamples = inst->nvsamples;
     while (nvsamples--)
     {
+      //检查样本的质量掩码和内容谓词是否与最小服务质量匹配，如果不匹配，则继续遍历下一个样本。
       struct rhc_sample * const sample1 = sample->next;
       if ((qmask_of_sample (sample) & qminv) != 0 || (qcmask != 0 && !(sample->conds & qcmask)))
       {
         /* sample mask doesn't match, or content predicate doesn't match */
         psample = sample;
       }
+      //如果样本的质量掩码和内容谓词与最小服务质量匹配，则更新相关条件和触发器信息，并将样本信息和数据复制到输出参数中。同时，更新样本计数器，并根据情况更新实例中的最新样本指针。
       else
       {
         take_sample_update_conditions (rhc, &pre, &post, &trig_qc, inst, sample->conds, sample->isread);
@@ -2359,10 +2372,11 @@ static int32_t take_w_qminv_inst (struct dds_rhc_default * const __restrict rhc,
         if (++n == max_samples)
           break;
       }
+      //继续遍历下一个样本
       sample = sample1;
     }
   }
-
+//如果存在逆样本（即无效样本），且当前取出的样本数量小于最大样本数量，并且逆样本的质量掩码与最小服务质量不匹配，且内容谓词为空或匹配，则继续处理逆样本。更新相关触发器信息，并将逆样本信息和数据复制到输出参数中。
   if (inst->inv_exists && n < max_samples && (qmask_of_invsample (inst) & qminv) == 0 && (qcmask == 0 || (inst->conds & qcmask) != 0))
   {
     struct trigger_info_qcond dummy_trig_qc;
@@ -2375,16 +2389,18 @@ static int32_t take_w_qminv_inst (struct dds_rhc_default * const __restrict rhc,
     inst_clear_invsample (rhc, inst, &dummy_trig_qc);
     ++n;
   }
-
+//如果成功取出了样本，则对样本信息中的代数计数进行修补，确保正确的代数计数。
   if (n > 0)
   {
     patch_generations (info_seq, (uint32_t) n - 1);
+    //如果当前实例是新的（即具有新的样本），则将其标记为非新的，并相应地更新默认数据读取处理上下文中的新样本数量。
     if (inst->isnew)
     {
       inst->isnew = 0;
       rhc->n_new--;
     }
     /* if nsamples = 0, it won't match anything, so no need to do anything here for drop_instance_noupdate_no_writers */
+    //获取更新后的触发器公共信息，并确保适当的条件更新。这些更新会影响实例中的条件计数器。
     get_trigger_info_cmn (&post.c, inst);
     assert (trig_qc.dec_conds_invsample == 0);
     assert (trig_qc.dec_conds_sample == 0);
@@ -2392,9 +2408,10 @@ static int32_t take_w_qminv_inst (struct dds_rhc_default * const __restrict rhc,
     assert (trig_qc.inc_conds_sample == 0);
     update_conditions_locked (rhc, false, &pre, &post, &trig_qc, inst);
   }
-
+//最后，如果实例为空，则调用一个函数来处理从非空到空的转换情况，该函数将适当地更新相关的计数器和数据结构
   if (inst_is_empty (inst))
     account_for_nonempty_to_empty_transition (rhc, instptr, "take: ");
+    //返回成功取出的样本数量。
   return n;
 }
 
@@ -2468,6 +2485,7 @@ static int32_t take_w_qminv (struct dds_rhc_default * __restrict rhc, bool lock,
     else
       n = DDS_RETCODE_PRECONDITION_NOT_MET;
   }
+  //如果没有指定实例句柄（handle），则遍历非空数据实例列表，从每个数据实例中取出数据，直到达到最大样本数量或所有非空实例都被处理。目前只会执行一次
   else if (!ddsrt_circlist_isempty (&rhc->nonempty_instances))
   {
     struct rhc_instance *inst = oldest_nonempty_instance (rhc);

@@ -809,7 +809,7 @@ static void whc_delete_one_intv (struct whc_impl *whc, struct whc_intvnode **p_i
     *p_intv = new_intv;
   }
 }
-
+//3）	Whc在缓存数据时会申请内存保存whc_node结构体，并且会增加序列化数据的引用计数，所以序列化的数据只有在收到ack或者whc的计数大于设置值时从wch中删除后才会释放内存（或者push到freelist）
 static void whc_delete_one (struct whc_impl *whc, struct dds_whc_default_node *whcn)
 {
   struct whc_intvnode *intv;
@@ -1367,7 +1367,7 @@ static struct dds_whc_default_node *whc_default_insert_seq (struct whc_impl *whc
 #endif
   return newn;
 }
-
+//3）	Whc在缓存数据时会申请内存保存whc_node结构体，并且会增加序列化数据的引用计数，所以序列化的数据只有在收到ack或者whc的计数大于设置值时从wch中删除后才会释放内存（或者push到freelist）
 static int whc_default_insert (struct ddsi_whc *whc_generic, ddsi_seqno_t max_drop_seq, ddsi_seqno_t seq, ddsrt_mtime_t exp, struct ddsi_serdata *serdata, struct ddsi_tkmap_instance *tk)
 {
   struct whc_impl * const whc = (struct whc_impl *)whc_generic;

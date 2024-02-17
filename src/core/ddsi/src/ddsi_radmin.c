@@ -475,7 +475,7 @@ static struct ddsi_rbuf *ddsi_rbuf_alloc_new (struct ddsi_rbufpool *rbp)
 {
   struct ddsi_rbuf *rb;
   ASSERT_RBUFPOOL_OWNER (rbp);
-
+//即接收缓冲区结构体大小加上接收缓冲区实际数据大小。
   if ((rb = ddsrt_malloc (sizeof (struct ddsi_rbuf) + rbp->rbuf_size)) == NULL)
     return NULL;
 #if USE_VALGRIND
@@ -483,6 +483,7 @@ static struct ddsi_rbuf *ddsi_rbuf_alloc_new (struct ddsi_rbufpool *rbp)
 #endif
 
   rb->rbufpool = rbp;
+  //设置接收消息块的初始计数为 1，表示该接收缓冲区中当前存在一个接收消息块。
   ddsrt_atomic_st32 (&rb->n_live_rmsg_chunks, 1);
   rb->size = rbp->rbuf_size;
   rb->max_rmsg_size = rbp->max_rmsg_size;
@@ -497,10 +498,13 @@ static struct ddsi_rbuf *ddsi_rbuf_new (struct ddsi_rbufpool *rbp)
   struct ddsi_rbuf *rb;
   assert (rbp->current);
   ASSERT_RBUFPOOL_OWNER (rbp);
+  //如果成功分配了新的接收缓冲区（即 rb 非空指针）,调用函数 ddsi_rbuf_alloc_new 在接收缓冲池中分配一个新的接收缓冲区，并将返回的指针存储在变量 rb 中。
   if ((rb = ddsi_rbuf_alloc_new (rbp)) != NULL)
   {
     ddsrt_mutex_lock (&rbp->lock);
+    //调用函数 ddsi_rbuf_release 释放当前接收缓冲区，以便将其归还到接收缓冲池中，避免内存泄漏。
     ddsi_rbuf_release (rbp->current);
+    //将新分配的接收缓冲区 rb 设置为接收缓冲池的当前缓冲区 rbp->current。
     rbp->current = rb;
     ddsrt_mutex_unlock (&rbp->lock);
   }
@@ -527,6 +531,16 @@ static void ddsi_rbuf_release (struct ddsi_rbuf *rbuf)
    readers matched to one proxy writer.  I believe it sufficiently
    unlikely that anyone will ever attempt to have 1 million readers on
    one node to one topic/partition ... */
+   /*
+   
+   "There are at most 64kB / 32B = 211 rdatas in one rmsg"**：每个接收消息（rmsg）最多可以包含多少个接收数据（rdata）。由于rmsg的大小限制为64KB，而Data子消息至少为32字节，所以一个rmsg最多可以容纳 64KB / 32B = 2^11 个rdata。
+
+"With 1 bit taken for committed/uncommitted (needed for debugging purposes only)"：在rmsg中，有1位用于标记消息的提交状态（已提交或未提交）。这只是为了调试目的，用于确定消息的状态。
+
+"there's room for up to 2^20 out-of-sync readers matched to one proxy writer"**：在一个rmsg中，除了用于提交状态的1位外，还有20位用于跟踪与一个代理写入者匹配的最大数量的不同步的读取者（out-of-sync readers）。这个数字是通过计算得到的，因为在这种假设下，rdata引用计数最多可以达到2^20。
+
+"I believe it sufficiently unlikely that anyone will ever attempt to have 1 million readers on one node to one topic/partition"：作者相信几乎没有人会在一个节点上尝试将1百万个读取者与一个主题/分区进行匹配。因此，这个引用计数的上限是合理的。
+   */
 #define RMSG_REFCOUNT_UNCOMMITTED_BIAS (1u << 31)
 #define RMSG_REFCOUNT_RDATA_BIAS (1u << 20)
 #ifndef NDEBUG
@@ -593,10 +607,13 @@ struct ddsi_rmsg *ddsi_rmsg_new (struct ddsi_rbufpool *rbp)
   if (rmsg == NULL)
     return NULL;
 
+//将接收消息的引用计数初始化为 RMSG_REFCOUNT_UNCOMMITTED_BIAS，表示消息尚未提交。这个引用计数的设置可以用于跟踪消息是否处于未提交状态。
   /* Reference to this rmsg, undone by rmsg_commit(). */
   ddsrt_atomic_st32 (&rmsg->refcount, RMSG_REFCOUNT_UNCOMMITTED_BIAS);
   /* Initial chunk */
+  //调用 init_rmsg_chunk 函数初始化消息的第一个数据块。该函数会初始化数据块并将其与当前的数据缓冲区关联起来。
   init_rmsg_chunk (&rmsg->chunk, rbp->current);
+  //将消息的跟踪标志设置为接收缓冲池中的跟踪标志，并将消息的 lastchunk 指针设置为消息的第一个数据块。
   rmsg->trace = rbp->trace;
   rmsg->lastchunk = &rmsg->chunk;
   /* Incrementing freeptr happens in commit(), so that discarding the
@@ -614,7 +631,9 @@ void ddsi_rmsg_setsize (struct ddsi_rmsg *rmsg, uint32_t size)
   assert (ddsrt_atomic_ld32 (&rmsg->refcount) == RMSG_REFCOUNT_UNCOMMITTED_BIAS);
   assert (rmsg->chunk.u.size == 0);
   assert (size8P <= rmsg->chunk.rbuf->max_rmsg_size);
+  //assert 语句用于确保引用计数为未提交状态，并且消息的当前数据块大小为零，并且指定的消息大小不超过允许的最大消息大小，并且消息的最后一个数据块指针与当前数据块相同。
   assert (rmsg->lastchunk == &rmsg->chunk);
+  //根据 size 参数计算消息的实际大小，并将其存储在消息的数据块中。
   rmsg->chunk.u.size = size8P;
 #if USE_VALGRIND
   VALGRIND_MEMPOOL_CHANGE (rmsg->chunk.rbuf->rbufpool, rmsg, rmsg, offsetof (struct ddsi_rmsg, chunk.u.payload) + rmsg->chunk.size);
@@ -632,11 +651,15 @@ void ddsi_rmsg_free (struct ddsi_rmsg *rmsg)
      compare-and-swap for this. */
   struct ddsi_rmsg_chunk *c;
   RMSGTRACE ("rmsg_free(%p)\n", (void *) rmsg);
+  //确保 refcount 为零，即没有任何对该消息的引用。这是一个先决条件，因为只有在没有引用时才能释放消息。
   assert (ddsrt_atomic_ld32 (&rmsg->refcount) == 0);
+  //将指针 c 指向消息的第一个数据块 chunk。
   c = &rmsg->chunk;
   while (c)
   {
+    //获取当前数据块 c 所属的接收缓冲区。
     struct ddsi_rbuf *rbuf = c->rbuf;
+    //获取下一个数据块的指针，以便在释放当前数据块后继续处理下一个数据块。
     struct ddsi_rmsg_chunk *c1 = c->next;
 #if USE_VALGRIND
     if (c == &rmsg->chunk) {
@@ -645,16 +668,40 @@ void ddsi_rmsg_free (struct ddsi_rmsg *rmsg)
       VALGRIND_MEMPOOL_FREE (rbuf->rbufpool, c);
     }
 #endif
+//：确保接收缓冲区中至少存在一个活动的消息数据块。这是一个先决条件，因为只有在至少存在一个消息数据块时才能释放接收缓冲区
     assert (ddsrt_atomic_ld32 (&rbuf->n_live_rmsg_chunks) > 0);
+    //ddsi_rbuf_release (rbuf);：释放当前数据块所属的接收缓冲区。
     ddsi_rbuf_release (rbuf);
+    //将指针 c 更新为下一个数据块的指针，以便继续处理下一个数据块。
     c = c1;
   }
+  //，所有数据块及其关联的接收缓冲区都已释放，函数执行完毕。
 }
 
 static void commit_rmsg_chunk (struct ddsi_rmsg_chunk *chunk)
 {
   struct ddsi_rbuf *rbuf = chunk->rbuf;
   RBUFTRACE ("commit_rmsg_chunk(%p)\n", (void *) chunk);
+  //：根据消息数据块的大小，更新接收缓冲池的空闲指针。空闲指针指向数据块中未使用的内存区域的起始位置，以便在接收新的数据时使用。
+
+  /*
+  
+假设 chunk 是一个指向 ddsi_rmsg_chunk 结构体的指针，并且该结构体的大小为 sizeof(ddsi_rmsg_chunk) 字节。此外，假设 chunk->u.size 表示消息数据块的大小，单位为字节。
+
+让我们用具体的数字来说明：
+
+假设 sizeof(ddsi_rmsg_chunk) 为 64 字节，chunk->u.size 为 100 字节。
+
+则 chunk + 1 将指针向后移动 sizeof(ddsi_rmsg_chunk) 字节的大小，即指向结构体后的下一个字节。如果结构体是字节对齐的，则 (chunk + 1) 实际上指向了消息数据块的起始位置。
+
+然后，(unsigned char *) (chunk + 1) + chunk->u.size 将指针进一步移动 chunk->u.size 字节的大小，以指向消息数据块的末尾之后的下一个字节。
+
+举例来说，假设 chunk 指针指向地址 0x1000，并且消息数据块的大小为 100 字节，则：
+
+chunk + 1 指向地址 0x1040。
+(unsigned char *) (chunk + 1) + chunk->u.size 指向地址 0x10A8。
+这样，rbuf->freeptr 将被设置为地址 0x10A8，表示接收缓冲池中未使用的内存区域的末尾位置。
+  */
   rbuf->freeptr = (unsigned char *) (chunk + 1) + chunk->u.size;
 }
 
@@ -668,24 +715,35 @@ void ddsi_rmsg_commit (struct ddsi_rmsg *rmsg)
      contain anything processed asynchronously, or the scheduling
      happens to be such that any asynchronous activities have
      completed before we got to commit. */
+     //：获取消息的最后一个数据块，该数据块包含要提交的消息内容。
   struct ddsi_rmsg_chunk *chunk = rmsg->lastchunk;
   RMSGTRACE ("rmsg_commit(%p) refcount 0x%"PRIx32" last-chunk-size %"PRIu32"\n",
              (void *) rmsg, rmsg->refcount.v, chunk->u.size);
   ASSERT_RBUFPOOL_OWNER (chunk->rbuf->rbufpool);
+  //确保消息尚未提交。
   ASSERT_RMSG_UNCOMMITTED (rmsg);
+  //：确保消息的大小不超过接收缓冲区允许的最大消息大小。
   assert (chunk->u.size <= chunk->rbuf->max_rmsg_size);
+  //确保消息大小按照指定的对齐方式对齐
   assert ((chunk->u.size % DDSI_ALIGNOF_RMSG) == 0);
+  //确保消息的引用计数至少为未提交的偏置值，这意味着消息有未提交的引用。
   assert (ddsrt_atomic_ld32 (&rmsg->refcount) >= RMSG_REFCOUNT_UNCOMMITTED_BIAS);
+  //：确保当前数据块所属的接收缓冲区中至少存在一个活动的消息数据块
   assert (ddsrt_atomic_ld32 (&rmsg->chunk.rbuf->n_live_rmsg_chunks) > 0);
   assert (ddsrt_atomic_ld32 (&chunk->rbuf->n_live_rmsg_chunks) > 0);
+  //：确保数据块所属的接收缓冲区是当前接收缓冲区。
   assert (chunk->rbuf->rbufpool->current == chunk->rbuf);
+  //尝试将消息的引用计数减去未提交的偏置值。如果结果为零，表示消息没有其他未提交的引用，因此可以释放该消息。
   if (ddsrt_atomic_sub32_nv (&rmsg->refcount, RMSG_REFCOUNT_UNCOMMITTED_BIAS) == 0)
+  //释放消息及其关联的内存块。
     ddsi_rmsg_free (rmsg);
   else
   {
+    //如果消息仍然有其他未提交的引用，则保留该消息。
     /* Other references exist, so either stored in defrag, reorder
        and/or delivery queue */
     RMSGTRACE ("rmsg_commit(%p) => keep\n", (void *) rmsg);
+    //：如果消息仍然有其他未提交的引用，则将消息的内存块标记为已提交，以便重用该内存块。
     commit_rmsg_chunk (chunk);
   }
 }
@@ -992,9 +1050,11 @@ static void defrag_rsample_drop (struct ddsi_defrag *defrag, struct ddsi_rsample
   ddsrt_avl_iter_t iter;
   struct ddsi_defrag_iv *iv;
   TRACE (defrag, "  defrag_rsample_drop (%p, %p)\n", (void *) defrag, (void *) rsample);
+  //从样本树（sampletree）中删除目标样本。
   ddsrt_avl_delete (&defrag_sampletree_treedef, &defrag->sampletree, rsample);
   assert (defrag->n_samples > 0);
   defrag->n_samples--;
+  //遍历目标样本的所有数据片段（fragments），并调用函数 ddsi_fragchain_rmbias() 来标记这些片段已经被丢弃。
   for (iv = ddsrt_avl_iter_first (&rsample_defrag_fragtree_treedef, &rsample->u.defrag.fragtree, &iter); iv; iv = ddsrt_avl_iter_next (&iter))
   {
     if (iv->first)
@@ -1095,15 +1155,17 @@ static void rsample_init_common (UNUSED_ARG (struct ddsi_rsample *rsample), UNUS
 {
 }
 
+//创建一个新的样本（rsample）
 static struct ddsi_rsample *defrag_rsample_new (struct ddsi_rdata *rdata, const struct ddsi_rsample_info *sampleinfo)
 {
   struct ddsi_rsample *rsample;
   struct ddsi_rsample_defrag *dfsample;
   ddsrt_avl_ipath_t ivpath;
-
+//初始化样本结构体，并将共同的初始化操作委托给 rsample_init_common 函数。
   if ((rsample = ddsi_rmsg_alloc (rdata->rmsg, sizeof (*rsample))) == NULL)
     return NULL;
   rsample_init_common (rsample, rdata, sampleinfo);
+  //初始化样本特定于碎片合并的结构体成员 dfsample，并设置最后一个片段指针为 NULL，以及样本的序列号。分配内存以存储样本信息，并将其复制到样本的 sampleinfo 成员中。
   dfsample = &rsample->u.defrag;
   dfsample->lastfrag = NULL;
   dfsample->seq = sampleinfo->seq;
@@ -1115,8 +1177,9 @@ static struct ddsi_rsample *defrag_rsample_new (struct ddsi_rdata *rdata, const 
 
   /* add sentinel if rdata is not the first fragment of the message */
   if (rdata->min > 0)
-  {
+  {//初始化 AVL 树以存储样本的片段，以及可能的 "sentinel" 片段（若收到的第一个片段不是消息的第一个片段）。
     struct ddsi_defrag_iv *sentinel;
+    //如果收到的第一个片段不是消息的第一个片段，则添加一个 "sentinel" 片段，其起始位置和结束位置均为 0，并将其插入到 AVL 树中。
     if ((sentinel = ddsi_rmsg_alloc (rdata->rmsg, sizeof (*sentinel))) == NULL)
       return NULL;
     sentinel->first = sentinel->last = NULL;
@@ -1126,6 +1189,7 @@ static struct ddsi_rsample *defrag_rsample_new (struct ddsi_rdata *rdata, const 
   }
 
   /* add an interval for the first received fragment */
+  //将收到的第一个片段作为一个新的片段区间添加到 AVL 树中。
   ddsrt_avl_lookup_ipath (&rsample_defrag_fragtree_treedef, &dfsample->fragtree, &rdata->min, &ivpath);
   defrag_rsample_addiv (dfsample, rdata, &ivpath);
   return rsample;
@@ -1192,7 +1256,7 @@ static int is_complete (const struct ddsi_rsample_defrag *sample)
   }
 }
 
-static void rsample_convert_defrag_to_reorder (struct ddsi_rsample *sample)
+static void . (struct ddsi_rsample *sample)
 {
   /* Converts an rsample as stored in defrag to one as stored in a
      reorder admin. Have to be careful with the ordering, or at least
@@ -1217,11 +1281,12 @@ static void rsample_convert_defrag_to_reorder (struct ddsi_rsample *sample)
   sample->u.reorder.maxp1 = seq + 1;
   sample->u.reorder.n_samples = 1;
 }
-
+//将新的数据片段（rdata）添加到样本（rsample）的函数
 static struct ddsi_rsample *defrag_add_fragment (struct ddsi_defrag *defrag, struct ddsi_rsample *sample, struct ddsi_rdata *rdata, const struct ddsi_rsample_info *sampleinfo)
 {
   struct ddsi_rsample_defrag *dfsample = &sample->u.defrag;
   struct ddsi_defrag_iv *predeq, *succ;
+  //确定数据片段的起始位置和结束位置（min 和 maxp1）。
   const uint32_t min = rdata->min;
   const uint32_t maxp1 = rdata->maxp1;
 
@@ -1234,10 +1299,13 @@ static struct ddsi_rsample *defrag_add_fragment (struct ddsi_defrag *defrag, str
   /* there must be a last fragment */
   assert (dfsample->lastfrag);
   /* relatively expensive test: lastfrag, tree must be consistent */
+  //根据 AVL 树的性质，查找在样本中所有数据片段中起始位置最接近但不超过新数据片段起始位置的已知片段（predeq）。
   assert (dfsample->lastfrag == ddsrt_avl_find_max (&rsample_defrag_fragtree_treedef, &dfsample->fragtree));
 
   TRACE (defrag, "  lastfrag %p [%"PRIu32"..%"PRIu32")\n", (void *) dfsample->lastfrag, dfsample->lastfrag->min, dfsample->lastfrag->maxp1);
-
+// //如果新数据片段完全包含在 predeq 中，则丢弃新数据片段，并返回空指针。
+// 如果新数据片段与 predeq 相连（可以延伸 predeq），则将新数据片段添加到 predeq 的末尾，并尝试与后继片段合并。
+// 如果新数据片段与前后片段都不相连，则创建一个新的数据片段并添加到样本的片段树中。
   /* Interval tree is sorted on min offset; each key is unique:
      otherwise one would be wholly contained in another. */
   if (min >= dfsample->lastfrag->min)
@@ -1502,7 +1570,8 @@ struct ddsi_rsample *ddsi_defrag_rsample (struct ddsi_defrag *defrag, struct dds
     result = defrag_add_fragment (defrag, sample, rdata, sampleinfo);
   }
 
-  //如果 result 不为 NULL，这意味着一个消息已经完成。这部分代码从 AVL 树中删除消息，更新 max_sample，并将 ddsi_rsample 从 defrag 转换为 reorder 格式。
+  //如果 result 不为 NULL，这意味着一个消息已经完成。这部分代码从 AVL 树中删除消息，更新 max_sample，
+  //并将 ddsi_rsample 从 defrag 转换为 reorder 格式。
 
   if (result != NULL)
   {

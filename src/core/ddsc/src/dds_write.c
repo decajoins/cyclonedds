@@ -611,7 +611,7 @@ void dds_write_flush_impl (dds_writer *wr)
   ddsi_xpack_send (wr->m_xp, true);
   ddsrt_mutex_unlock (&wr->m_entity.m_mutex);
 }
-
+//这个函数用于执行本地的写入操作，将序列化的数据写入内置主题。以下是它的主要步骤：
 dds_return_t dds_writecdr_local_orphan_impl (struct ddsi_local_orphan_writer *lowr, struct ddsi_serdata *d)
 {
   // this never sends on the network and xp is only relevant for the network

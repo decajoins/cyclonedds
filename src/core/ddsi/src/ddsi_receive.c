@@ -1262,6 +1262,14 @@ accept_ack_or_hb_w_timeout 函数判断是否应该处理 ACKNACK。该函数用
 
 static int handle_Heartbeat (struct ddsi_receiver_state *rst, ddsrt_etime_t tnow, struct ddsi_rmsg *rmsg, const ddsi_rtps_heartbeat_t *msg, ddsrt_wctime_t timestamp, ddsi_rtps_submessage_kind_t prev_smid)
 {
+  /*
+  具体来说：
+
+在处理心跳消息时，系统会对所有读者进行处理，而不管心跳消息中的目标地址是什么。这是为了处理由于心跳消息而变得可交付的具有序列号的样本。
+然而，在生成应答消息（AckNacks）方面，系统会按照规范进行处理，具体的实现细节由handle_Heartbeat_helper函数负责。
+心跳消息中的状态 [a,b] 被解释为可用序列号范围的最小间隔，这里将其解释为一个间隙 [1,a)。另请参阅handle_Gap函数。
+总之，尽管在处理心跳消息时系统采取了一种偏离规范的行为，但在生成应答消息时仍然遵循规范。
+  */
   /* We now cheat: and process the heartbeat for _all_ readers,
      always, regardless of the destination address in the Heartbeat
      sub-message. This is to take care of the samples with sequence
@@ -1347,6 +1355,9 @@ GAP的过滤： 根据配置和目标GUID等条件，尝试对GAP进行过滤。
 将GAP加入待发送队列： 将经过处理的GAP加入到待发送队列，准备发送给相应的读者。根据配置选择同步或异步地处理用户数据。
 
 处理读者状态： 根据读者的同步状态（同步、追赶转瞬本地数据、失步）进行相应的处理。例如，在失步状态下，使用 firstseq 处理GAP，并通知相应的读者。
+ 
+ 在代码的实现中，首先确定了GAP的结束序列号（gap_end_seq），然后根据是否已经接收到过心跳消息来决定是否需要特殊处理gap_end_seq。接着，更新了代理写者的状态，包括最后一个序列号和碎片编号。最后，调用了ddsi_defrag_notegap函数来将GAP添加到缺失数据通知列表中，以便后续处理。
+ 
   */
   ddsi_seqno_t gap_end_seq = firstseq;
   if (!pwr->have_seen_heartbeat)
@@ -1370,7 +1381,29 @@ GAP的过滤： 根据配置和目标GUID等条件，尝试对GAP进行过滤。
   {
     pwr->last_fragnum = UINT32_MAX;
   }
+/*
 
+创建GAP结构体：首先创建一个表示GAP的ddsi_rdata结构体，并将其初始化为一个新的GAP对象。
+
+检查是否需要进行内容过滤：如果代理写者启用了内容过滤且目标GUID不为空，则需要检查是否有读者的目标GUID与之匹配。如果匹配成功且该读者启用了内容过滤，则根据该读者的重排序机制，对GAP进行重新排序处理，并将处理后的数据加入待发送队列。然后更新该读者的最后一个序列号。此时，filtered标志被设置为1。
+
+处理未经过内容过滤的情况：如果没有进行内容过滤，或者目标GUID为空，则对GAP进行普通的重新排序处理。根据代理写者的重排序机制，将处理后的数据加入待发送队列。然后，遍历代理写者的所有读者，根据它们的同步状态进行相应的处理。
+
+更新引用计数：最后，调整GAP的引用计数。
+
+调用handle_forall_destinations函数：在处理所有目标的函数中，调用了handle_Heartbeat_helper函数，对于所有读者进行了处理。
+
+这段代码的作用是根据心跳消息中的信息对GAP进行处理，并根据代理写者的配置和读者的状态将处理后的数据加入待发送队列。
+*/
+
+/*
+如果读者处于PRMSS_SYNC状态，意味着读者已经与代理写者同步，不需要再处理GAP，因此跳过。
+
+如果读者处于PRMSS_TLCATCHUP状态，表示读者正在追赶转瞬本地数据，可能需要根据代理写者的重排序机制进行相应的处理，并将数据加入待发送队列。
+
+如果读者处于PRMSS_OUT_OF_SYNC状态，表示读者已经失步，可能需要根据读者的重排序机制进行处理，并将数据加入待发送队列。
+
+*/
   ddsi_defrag_notegap (pwr->defrag, 1, gap_end_seq);
 
   {
@@ -2231,6 +2264,8 @@ static int deliver_user_data (const struct ddsi_rsample_info *sampleinfo, const 
   /* Luckily, the Data header (up to inline QoS) is a prefix of the
      DataFrag header, so for the fixed-position things that we're
      interested in here, both can be treated as Data submessages. */
+     //从接收到的数据中提取数据子消息（Data Submessage）的指针。
+     //假设 DDSI_RDATA_SUBMSG_OFF (fragchain) 返回的偏移量是 100，表示数据子消息在消息中的偏移量为 100 字节
   msg = (ddsi_rtps_data_datafrag_common_t *) DDSI_RMSG_PAYLOADOFF (fragchain->rmsg, DDSI_RDATA_SUBMSG_OFF (fragchain));
   //通过规范化数据子消息的标志获取数据子消息头标志。
   data_smhdr_flags = ddsi_normalize_data_datafrag_flags (&msg->smhdr);
@@ -2850,11 +2885,11 @@ if (sampleinfo->size > rst->gv->config.max_sample_size)：如果数据样本大�
 
 else：处理正常大小的数据。
 
-a. 计算数据偏移量，即数据在消息中的位置。
+    a. 计算数据偏移量，即数据在消息中的位置。
 
-b. 如果存在 datap（数据指针），计算数据有效负载的偏移量；否则，使用整个数据子消息的大小计算。
+    b. 如果存在 datap（数据指针），计算数据有效负载的偏移量；否则，使用整个数据子消息的大小计算。
 
-c. 如果存在 keyhash，计算关键哈希的偏移量；否则，偏移量为 0。
+    c. 如果存在 keyhash，计算关键哈希的偏移量；否则，偏移量为 0。
 
 rdata = ddsi_rdata_new (rmsg, 0, sampleinfo->size, submsg_offset, payload_offset, keyhash_offset);：创建 ddsi_rdata 结构表示数据，并传递相应的偏移量和大小信息。
 
@@ -3677,6 +3712,7 @@ static bool do_packet (struct ddsi_thread_state * const thrst, struct ddsi_domai
   }
   //静态断言 DDSRT_STATIC_ASSERT (sizeof (struct ddsi_rmsg) == offsetof (struct ddsi_rmsg, chunk) + sizeof (struct ddsi_rmsg_chunk)); 确保结构体 struct ddsi_rmsg 的大小等于其成员 chunk 的偏移量加上 struct ddsi_rmsg_chunk 结构体的大小。
   DDSRT_STATIC_ASSERT (sizeof (struct ddsi_rmsg) == offsetof (struct ddsi_rmsg, chunk) + sizeof (struct ddsi_rmsg_chunk));
+  //读取的数据保存在rbpool，保存地址为rmsg地址后：buff = (unsigned char *) NN_RMSG_PAYLOAD (rmsg);
   buff = (unsigned char *) DDSI_RMSG_PAYLOAD (rmsg);
   hdr = (ddsi_rtps_header_t*) buff;
 
@@ -3690,7 +3726,7 @@ static bool do_packet (struct ddsi_thread_state * const thrst, struct ddsi_domai
 
     所以，通过这个操作，你可以通过 ml 访问消息头之后的数据，也就是消息长度信息。这是一种处理包含可变长度数据的结构的一种常见方式。
     */
-    ddsi_rtps_msg_len_t * ml = (ddsi_rtps_msg_len_t*) (hdr + 1);
+    ddsi_rtps_msg_len_t * ml = (ddsi_rtps_msg_len_t*) (hdr + 1); //消息长度
 
     /*
       Read in packet header to get size of packet in ddsi_rtps_msg_len_t, then read in
@@ -3718,10 +3754,15 @@ static bool do_packet (struct ddsi_thread_state * const thrst, struct ddsi_domai
     if (swap) { ml->length = ddsrt_bswap4u(ml->length); }：如果需要字节序转换，对消息长度进行转换。
     */
 
+//buff：表示接收数据的缓冲区，此缓冲区大小为 buff_len，即 maxsz。 buff是rmsg的chunk，size为chunk的size!!!
+//buff_len：表示接收缓冲区的大小，即我们可以接收的最大数据包大小。  
+//true：表示阻塞模式，即函数会阻塞等待直到有数据可读。
+
     sz = ddsi_conn_read (conn, buff, stream_hdr_size, true, &srcloc);
     if (sz == 0)
     {
       /* Spurious read -- which at this point is still ok */
+      //最后通过ddsi_rmsg_commit函数提交ddsi_rmsg结构，使其变为有效，可以继续重用或释放。
       ddsi_rmsg_commit (rmsg);
       return true;
     }
@@ -3764,6 +3805,10 @@ static bool do_packet (struct ddsi_thread_state * const thrst, struct ddsi_domai
       }
       else
       {
+        //ddsi_rtps_msg_len_t * ml = (ddsi_rtps_msg_len_t*) (hdr + 1);
+        //const size_t stream_hdr_size = DDSI_RTPS_MESSAGE_HEADER_SIZE + ddsi_msg_len_size;
+        //buff + stream_hdr_size：表示接收剩余数据的缓冲区的起始地址，即跳过了消息头部分，从消息体开始的位置。
+        //ml->length - stream_hdr_size：表示要读取的剩余数据的长度，即消息的总长度减去消息头的长度，这样就保证了只读取剩余部分的数据。
         sz = ddsi_conn_read (conn, buff + stream_hdr_size, ml->length - stream_hdr_size, false, NULL);
         if (sz > 0)
         {
@@ -4000,6 +4045,10 @@ GVTRACE ("done\n");: 输出日志，表示接收线程完成任务。
 总结：ddsi_recv_thread函数负责在不同的工作模式下，接收和处理来自不同传输连接的数据包，并将其交给do_packet函数进行处理。它是接收线程的主要逻辑实现。在单播模式下，它通过循环监听单个传输连接；在多播模式下，它使用waitset对象来管理多个传输连接并等待事件。这样，接收线程能够高效地处理接收到的数据，并将其分发给相应的处理逻辑。
 
 */
+
+
+
+
 
 /*
 

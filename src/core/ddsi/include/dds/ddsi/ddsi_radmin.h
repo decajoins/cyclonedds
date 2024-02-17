@@ -64,6 +64,8 @@ struct ddsi_rmsg {
      decrementing of refcounts until after a sample has been added to
      all radmins even though be delivery of it may take place in
      concurrently. */
+     //这是一个原子无符号32位整数，用于跟踪对该消息的引用计数。
+     //当其他对象引用该消息时，会增加引用计数；当不再需要引用时，会减少引用计数。该引用计数受 RMSG_REFCOUNT_UNCOMMITED_BIAS 的影响，这样在分配内存、增加引用计数等操作时可以验证消息仍处于未提交状态。
   ddsrt_atomic_uint32_t refcount;
 
   /* Worst-case memory requirement is gigantic (64kB UDP packet, only
@@ -83,11 +85,14 @@ struct ddsi_rmsg {
      which is not strictly required but also not entirely
      unreasonable, considering that the first chunk has the refcount &
      the real packet. */
+     //指向消息的最后一个数据块（chunk）。数据块是消息的一部分，用于存储实际的数据内容。这里的最后一个数据块是指消息可能由多个数据块组成，而 lastchunk 指向其中的最后一个数据块。
   struct ddsi_rmsg_chunk *lastchunk;
 
   /* whether to log */
+  //个布尔值，表示是否记录该消息。当 trace 为 true 时，表示需要记录该消息的相关信息。
   bool trace;
 
+//一个 ddsi_rmsg_chunk 结构体，用于存储消息的内容。这里直接定义了一个 chunk 成员，而不是使用指针引用其他地方的数据块。这个 chunk 成员可能包含了消息的第一个数据块，而 lastchunk 则指向消息的最后一个数据块。
   struct ddsi_rmsg_chunk chunk;
 };
 DDSRT_STATIC_ASSERT (sizeof (struct ddsi_rmsg) == offsetof (struct ddsi_rmsg, chunk) + sizeof (struct ddsi_rmsg_chunk));
@@ -98,7 +103,9 @@ DDSRT_STATIC_ASSERT (sizeof (struct ddsi_rmsg) == offsetof (struct ddsi_rmsg, ch
 struct ddsi_rdata {
   struct ddsi_rmsg *rmsg;         /* received (and refcounted) in rmsg */
   struct ddsi_rdata *nextfrag;    /* fragment chain */
+  //表示数据片段在数据包中的起始位置和结束位置（不含）。
   uint32_t min, maxp1;          /* fragment as byte offsets */
+  //表示从数据包开始处到子消息、有效载荷和键哈希的偏移量。这些偏移量是相对于数据包起始位置的。
   uint16_t submsg_zoff;         /* offset to submessage from packet start, or 0 */
   uint16_t payload_zoff;        /* offset to payload from packet start */
   uint16_t keyhash_zoff;        /* offset to keyhash from packet start, or 0 */
@@ -124,6 +131,7 @@ struct ddsi_rdata {
 #define DDSI_ZOFF_TO_OFF(zoff) ((unsigned) (zoff))
 #define DDSI_OFF_TO_ZOFF(off) ((unsigned short) (off))
 #endif
+// 结构体中的偏移量字段转换为实际偏移量的宏。
 #define DDSI_RDATA_PAYLOAD_OFF(rdata) DDSI_ZOFF_TO_OFF ((rdata)->payload_zoff)
 #define DDSI_RDATA_SUBMSG_OFF(rdata) DDSI_ZOFF_TO_OFF ((rdata)->submsg_zoff)
 #define DDSI_RDATA_KEYHASH_OFF(rdata) DDSI_ZOFF_TO_OFF ((rdata)->keyhash_zoff)

@@ -177,6 +177,7 @@ void ddsi_rebuild_writer_addrset (struct ddsi_writer *wr)
   /* swap in new address set; this simple procedure is ok as long as
      wr->as is never accessed without the wr->e.lock held */
   struct ddsi_addrset * const oldas = wr->as;
+  //通过调用ddsi_compute_writer_addrset(wr)函数来计算新的地址集合，并将其赋值给wr->as。同时，释放旧的地址集合（oldas）。
   wr->as = ddsi_compute_writer_addrset (wr);
   ddsi_unref_addrset (oldas);
 
@@ -190,6 +191,7 @@ void ddsi_rebuild_writer_addrset (struct ddsi_writer *wr)
      - the way things are now: the retransmits will be sent unicast,
        so if there are multiple receivers, that'll blow up things by
        a non-trivial amount */
+       //计算传输突发大小限制（burst size limit）的一些参数。这里的目标是尽量限制重新传输和初始传输的大小，以保持网络负载的合理水平。
   const uint32_t min_receive_buffer_size = get_min_receive_buffer_size (wr);
   wr->rexmit_burst_size_limit = min_receive_buffer_size - min_receive_buffer_size / 3;
   if (wr->rexmit_burst_size_limit < 1024)
@@ -348,6 +350,7 @@ void ddsi_update_reader_init_acknack_count (const ddsrt_log_cfg_t *logcfg, const
   }
 }
 
+//用来向读者传送历史数据
 void ddsi_deliver_historical_data (const struct ddsi_writer *wr, const struct ddsi_reader *rd)
 {
   struct ddsi_domaingv * const gv = wr->e.gv;
@@ -356,9 +359,12 @@ void ddsi_deliver_historical_data (const struct ddsi_writer *wr, const struct dd
   struct ddsi_whc_borrowed_sample sample;
   /* FIXME: should limit ourselves to what it is available because of durability history, not writer history */
   ddsi_whc_sample_iter_init (wr->whc, &it);
+  //使用历史数据迭代器 it，循环遍历写者的历史数据，并从历史数据缓存中借用下一个样本
   while (ddsi_whc_sample_iter_borrow_next (&it, &sample))
   {
     struct ddsi_serdata *payload;
+    //对于每个借用的样本，首先尝试将其序列化为目标读者 rd 期望的类型。如果序列化失败，则记录警告日志，并继续处理下一个样本。
+    //如果序列化成功，则根据样本的数据生成写者信息，并在读者的历史缓存中存储数据，并释放主题键值映射的实例引用。
     if ((payload = ddsi_serdata_ref_as_type (rd->type, sample.serdata)) == NULL)
     {
       GVWARNING ("local: deserialization of %s/%s as %s/%s failed in topic type conversion\n",
@@ -382,6 +388,7 @@ static void new_reader_writer_common (const struct ddsrt_log_cfg *logcfg, const 
   const char *partition_suffix = "";
   assert (topic_name != NULL);
   assert (type_name != NULL);
+  //如果读者或写者是内置实体（由 Eclipse 供应商 ID 定义），则将分区信息设置为 "(null)"，因为内置实体不会基于 QoS 设置进行匹配。
   if (ddsi_is_builtin_entityid (guid->entityid, DDSI_VENDORID_ECLIPSE))
   {
     /* continue printing it as not being in a partition, the actual
@@ -389,6 +396,7 @@ static void new_reader_writer_common (const struct ddsrt_log_cfg *logcfg, const 
        settings */
     partition = "(null)";
   }
+  //否则，如果 xqos 中包含分区信息，并且第一个分区名称不为空，则将分区信息设置为第一个分区的名称，并在需要时附加后缀 "+"，表示还有更多的分区。
   else if ((xqos->present & DDSI_QP_PARTITION) && xqos->partition.n > 0 && strcmp (xqos->partition.strs[0], "") != 0)
   {
     partition = xqos->partition.strs[0];
@@ -563,18 +571,21 @@ static void augment_wr_prd_match (void *vnode, const void *vleft, const void *vr
 
 
 /* WRITER ----------------------------------------------------------- */
-
+//用来获取写者（wr）的最大丢失序列号（max_drop_seq）的函数。最大丢失序列号表示当前写者已发送但尚未收到确认的最大序列号
 ddsi_seqno_t ddsi_writer_max_drop_seq (const struct ddsi_writer *wr)
 {
   const struct ddsi_wr_prd_match *n;
+  //如果写者没有任何读者，则返回写者当前的序列号（wr->seq）。因为如果没有读者，写者发送的消息不会被接收方确认，所以没有未确认的消息
   if (ddsrt_avl_is_empty (&wr->readers))
     return wr->seq;
+    //否则，如果存在读者，则获取读者中最小的序列号（n->min_seq）。这里使用AVL树（一种自平衡二叉搜索树）来管理读者，通过ddsrt_avl_root_non_empty函数获取根节点，然后从根节点中获取最小序列号。
   n = ddsrt_avl_root_non_empty (&ddsi_wr_readers_treedef, &wr->readers);
+  //如果最小序列号为DDSI_MAX_SEQ_NUMBER，表示尚未收到任何确认，那么返回写者当前的序列号（wr->seq）；否则，返回读者中最小的序列号
   return (n->min_seq == DDSI_MAX_SEQ_NUMBER) ? wr->seq : n->min_seq;
 }
-
+//写者（wr）是否需要安排心跳
 int ddsi_writer_must_have_hb_scheduled (const struct ddsi_writer *wr, const struct ddsi_whc_state *whcst)
-{
+{//如果写者没有任何读者，则无法传输有效的心跳，因为没有数据需要传输，而且如果没有读者，心跳也不会被发送到任何地方。因此，此时函数返回0，表示不需要安排心跳。
   if (ddsrt_avl_is_empty (&wr->readers))
   {
     /* Can't transmit a valid heartbeat if there is no data; and it
@@ -586,7 +597,7 @@ int ddsi_writer_must_have_hb_scheduled (const struct ddsi_writer *wr, const stru
        heartbeats in the absence of data. */
     return 0;
   }
-  //否则，检查读者中的节点是否有任何一个节点未回复心跳，如果是，则返回 1，表示需要安排心跳
+  //否则，如果存在读者，并且至少有一个读者没有回复心跳，则需要安排心跳。这是因为至少有一个读者未响应心跳，需要通过发送心跳来确保数据的可靠传输。
   else if (!((const struct ddsi_wr_prd_match *) ddsrt_avl_root_non_empty (&ddsi_wr_readers_treedef, &wr->readers))->all_have_replied_to_hb)
   {
     /* Labouring under the belief that heartbeats must be sent
@@ -600,6 +611,7 @@ int ddsi_writer_must_have_hb_scheduled (const struct ddsi_writer *wr, const stru
        requiring a non-empty whc_seq: if it is transient_local,
        whc_seq usually won't be empty even when all msgs have been
        ack'd. */
+       //最后，如果所有消息都已被确认，即写者的最大丢失序列号（ddsi_writer_max_drop_seq(wr)）小于当前维护的最大序列号（whcst->max_seq），则也不需要安排心跳。
     return ddsi_writer_max_drop_seq (wr) < whcst->max_seq;
   }
 }
@@ -867,6 +879,7 @@ static void ddsi_new_writer_guid_common_init (struct ddsi_writer *wr, const char
      happen until after it becomes visible. */
   if (!wr->reliable)
     wr->heartbeat_xevent = NULL;
+    //三个内置writer会触发心跳事件
   else
   {
     struct ddsi_heartbeat_xevent_cb_arg arg = {.wr_guid = wr->e.guid };

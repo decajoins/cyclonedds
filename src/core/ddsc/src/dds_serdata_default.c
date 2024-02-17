@@ -530,6 +530,12 @@ d: 指向 ddsi_serdata_default 结构的指针，表示序列化数据对象。
 将输出流对象的 m_xcdr_version 成员设置为序列化数据对象的 hdr.identifier 字段中表示 XCDR 版本的部分。
 最终，该函数初始化了输出流对象，使其准备好接收序列化数据。
 */
+/*
+将serdata转换为stream，方便后续操作
+s->m_index只想序列化数据data的偏移量
+s->m_size为serdata的初始大小（128字节）+serdata头的大小（data的偏移量）
+
+*/
 static void ostream_from_serdata_default (dds_ostream_t * __restrict s, const struct dds_serdata_default * __restrict d)
 {
   s->m_buffer = (unsigned char *) d;
@@ -594,11 +600,20 @@ sample: 指向样本数据的指针。
 static struct dds_serdata_default *serdata_default_from_sample_cdr_common (const struct ddsi_sertype *tpcmn, enum ddsi_serdata_kind kind, uint32_t xcdr_version, const void *sample)
 {
   const struct dds_sertype_default *tp = (const struct dds_sertype_default *)tpcmn;
+  //#define MAX_POOL_SIZE 8192
+//#define DEFAULT_NEW_SIZE 128  128
+/*
+Size:申请的序列化的内存大小，不包括ddsi_serdata_default结构体，在实际序列化时，如果实际数据大小超过该尺寸会重新申请，申请大小按4K对齐（VIU申请512字节）
+Key：同sample是否带key有关，目前我们使用的序列化方法都不带key
+Serpool：序列化的内存池。内存池是一种减少内存申请的机制，即将内存申请使用后不释放，直接push到serpool指定的freelist中，当下次申请内存时直接从freelist中pop出来。此方法用于减少内存申请的系统调用损耗，缺点是会浪费一定内存。Freelist个数据有最大限制8192，所以不会出现无限制内存申请，最大浪费内存按128字节计算大约2M
+
+*/
   struct dds_serdata_default *d = serdata_default_new(tp, kind, xcdr_version);
   if (d == NULL)
     return NULL;
 
   dds_ostream_t os;
+  //将serdata转换为stream，方便后续操作
   ostream_from_serdata_default (&os, d);
   switch (kind)
   {
@@ -662,8 +677,10 @@ static struct ddsi_serdata *serdata_default_from_sample_data_representation (con
   assert (data_representation == DDS_DATA_REPRESENTATION_XCDR1 || data_representation == DDS_DATA_REPRESENTATION_XCDR2);
   struct dds_serdata_default *d;
   uint32_t xcdr_version = data_representation == DDS_DATA_REPRESENTATION_XCDR1 ? DDSI_RTPS_CDR_ENC_VERSION_1 : DDSI_RTPS_CDR_ENC_VERSION_2;
+  //新申请一个serdata结构体，其主要由sertype:tpcmn，kind：key还是data,序列化版本，用户数据sample决定
   if ((d = serdata_default_from_sample_cdr_common (tpcmn, kind, xcdr_version, sample)) == NULL)
     return NULL;
+    //根据desc是否有key生成serdata对应的hash值，如果没有key值，则serdata hash为tpcmn->serdata_basehash，即对default_serdata_op的hash值（在dds_create_topic处初始化serdata时设置）
   return key ? fix_serdata_default (d, tpcmn->serdata_basehash) : fix_serdata_default_nokey (d, tpcmn->serdata_basehash);
 }
 

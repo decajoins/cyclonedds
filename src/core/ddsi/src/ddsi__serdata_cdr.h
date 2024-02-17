@@ -29,6 +29,11 @@ extern "C" {
    offset mod 8 for the conversion to/from a dds_stream to work).
    So we define two types: one without any additional padding, and
    one where the appropriate amount of padding is inserted */
+   /*
+   DDSI_SERDATA_CDR_PREPAD 和 DDSI_SERDATA_CDR_POSTPAD：这两个宏定义了用于序列化和反序列化数据的结构。DDSI_SERDATA_CDR_PREPAD 定义了一个结构体，其中包含一个没有任何填充的 ddsi_serdata 结构体实例 c，以及 pos 和 size 两个无填充的 uint32_t 类型的成员。DDSI_SERDATA_CDR_POSTPAD 定义了另一个结构体，其中包含一个带有适当填充的 ddsi_serdata 结构体实例 hdr，以及一个未命名的字符数组 data，用于存储序列化后的数据。
+DDSI_SERDATA_CDR_PAD(n)：这个宏用于计算结构体中字符数组的填充大小，确保数据在序列化和反序列化时具有正确的对齐。 
+   
+   */
 #define DDSI_SERDATA_CDR_PREPAD   \
   struct ddsi_serdata c;          \
   uint32_t pos;                   \
@@ -59,12 +64,13 @@ struct ddsi_serdata_cdr_unpadded {
 #define DDSI_SERDATA_CDR_PAD(n) (n)
 #endif
 
+//继承了 DDSI_SERDATA_CDR_PREPAD 和 DDSI_SERDATA_CDR_POSTPAD，用于表示未填充的CDR序列化数据。它包含一个 DDSI_SERDATA_CDR_PREPAD 实例和一个 DDSI_SERDATA_CDR_POSTPAD 实例。
 struct ddsi_serdata_cdr {
   DDSI_SERDATA_CDR_PREPAD;
   char pad[DDSI_SERDATA_CDR_PAD (8 - (offsetof (struct ddsi_serdata_cdr_unpadded, data) % 8))];
   DDSI_SERDATA_CDR_POSTPAD;
 };
-
+//DDSRT_STATIC_ASSERT ((offsetof (struct ddsi_serdata_cdr, data) % 8) == 0);：这是一个静态断言，用于确保数据结构中的字符数组 data 在偏移量上正确对齐到8字节边界。
 DDSRT_STATIC_ASSERT ((offsetof (struct ddsi_serdata_cdr, data) % 8) == 0);
 
 #undef DDSI_SERDATA_CDR_PAD

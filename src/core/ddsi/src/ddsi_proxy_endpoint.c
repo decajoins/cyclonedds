@@ -261,6 +261,7 @@ int ddsi_new_proxy_writer (struct ddsi_domaingv *gv, const struct ddsi_guid *ppg
     pwr->deliver_synchronously = 0;
   }
   /* Pretend we have seen a heartbeat if the proxy writer is a best-effort one */
+  //可靠为false
   isreliable = (pwr->c.xqos->reliability.kind != DDS_RELIABILITY_BEST_EFFORT);
   pwr->have_seen_heartbeat = !isreliable;
   pwr->local_matching_inprogress = 1;

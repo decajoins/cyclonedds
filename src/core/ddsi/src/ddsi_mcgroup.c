@@ -130,6 +130,16 @@ static int unreg_group_membership (struct ddsi_mcgroup_membership *mship, struct
   return mustdel;
 }
 
+/*
+join: 表示进行了加入多播组的操作。
+conn 0x55f73972bdd0: 这是连接的标识符，通常是一个指向连接对象的指针或引用。在这里，0x55f73972bdd0 是连接的地址或标识符。
+for (udp/239.255.0.1, *): 表示加入了多播地址为 239.255.0.1 的 UDP 多播组。udp 表示使用 UDP 协议，239.255.0.1 是多播组的地址。
+在这里，* 表示没有指定源地址。
+interface udp/127.0.0.1: 表示使用的网络接口地址为 127.0.0.1。这指示消息是通过本地回环接口进行的多播操作。
+
+网络接口上通过本地回环地址加入了一个 UDP 多播组。
+
+*/
 static char *make_joinleave_msg (char *buf, size_t bufsz, struct ddsi_tran_conn * conn, int join, const ddsi_locator_t *srcloc, const ddsi_locator_t *mcloc, const struct ddsi_network_interface *interf, int err)
 {
   char mcstr[DDSI_LOCSTRLEN], interfstr[DDSI_LOCSTRLEN];

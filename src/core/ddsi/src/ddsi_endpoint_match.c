@@ -368,13 +368,16 @@ static void connect_writer_with_reader (struct ddsi_writer *wr, struct ddsi_read
   dds_qos_policy_id_t reason;
   struct ddsi_alive_state alive_state;
   (void)tnow;
+  //检查写者和读者是否为本地孤立端点（即没有在同一域中），如果是，则直接返回，不建立连接。
   if (!ddsi_is_local_orphan_endpoint (&wr->e) && (ddsi_is_builtin_entityid (wr->e.guid.entityid, DDSI_VENDORID_ECLIPSE) || ddsi_is_builtin_entityid (rd->e.guid.entityid, DDSI_VENDORID_ECLIPSE)))
     return;
+    //检查是否应忽略本地连接，如果是，则直接返回，不建立连接。
   if (ignore_local_p (&wr->e.guid, &rd->e.guid, wr->xqos, rd->xqos))
     return;
 #ifdef DDS_HAS_TYPE_DISCOVERY
   if (!topickind_qos_match_p_lock (wr->e.gv, &rd->e, rd->xqos, &wr->e, wr->xqos, &reason, rd->c.type_pair, wr->c.type_pair))
 #else
+  //使用 topickind_qos_match_p_lock 函数检查写者和读者的主题和QoS是否匹配，如果不匹配，则记录写者和读者的QoS不匹配，然后返回，不建立连接。
   if (!topickind_qos_match_p_lock (wr->e.gv, &rd->e, rd->xqos, &wr->e, wr->xqos, &reason))
 #endif
   {
@@ -385,7 +388,9 @@ static void connect_writer_with_reader (struct ddsi_writer *wr, struct ddsi_read
   /* Initialze the reader's tracking information for the writer liveliness state to something
      sensible, but that may be outdated by the time the reader gets added to the writer's list
      of matching readers. */
+     //初始化读者的追踪信息，用于跟踪写者的活跃状态，该信息在连接添加到写者的匹配读者列表之前可能会过时。
   ddsi_writer_get_alive_state (wr, &alive_state);
+  //将读者添加到写者的本地连接列表中，同时将写者添加到读者的本地连接列表中。最后，更新读者与写者的活跃状态，以确保它们之间的连接状态是最新的。
   ddsi_reader_add_local_connection (rd, wr, &alive_state);
   ddsi_writer_add_local_connection (wr, rd);
 
@@ -663,6 +668,7 @@ void ddsi_free_wr_rd_match (struct ddsi_wr_rd_match *m)
   if (m) ddsrt_free (m);
 }
 
+//写者（wr）与代理读者（prd）建立连接
 void ddsi_writer_add_connection (struct ddsi_writer *wr, struct ddsi_proxy_reader *prd, int64_t crypto_handle)
 {
   struct ddsi_wr_prd_match *m = ddsrt_malloc (sizeof (*m));
@@ -767,6 +773,7 @@ void ddsi_writer_add_connection (struct ddsi_writer *wr, struct ddsi_proxy_reade
       /* To make sure that we keep sending heartbeats at a higher rate
          at the start of this discovery, reset the hbs_since_last_write
          count to zero. */
+         //重置为零，以便在新的心跳周期开始时重新计数。
       wr->hbcontrol.hbs_since_last_write = 0;
       if (tnext.v < wr->hbcontrol.tsched.v)
       {
@@ -807,6 +814,7 @@ void ddsi_writer_add_local_connection (struct ddsi_writer *wr, struct ddsi_reade
 
   /* Store available data into the late joining reader when it is reliable (we don't do
      historical data for best-effort data over the wire, so also not locally). */
+     //根据可用性和可靠性要求，向新添加的读者发送历史数据（如果可用）。
   if (rd->xqos->reliability.kind > DDS_RELIABILITY_BEST_EFFORT && rd->xqos->durability.kind > DDS_DURABILITY_VOLATILE)
     ddsi_deliver_historical_data (wr, rd);
 
@@ -977,6 +985,14 @@ void ddsi_proxy_writer_add_connection (struct ddsi_proxy_writer *pwr, struct dds
      If we don't mind those extra AckNacks, we could track the count
      at the proxy-writer and simply treat all incoming heartbeats as
      undirected. */
+     /*
+     在处理心跳时，系统需要正确地处理定向心跳（directed heartbeat）和非定向心跳（undirected heartbeat）。
+定向心跳是针对特定的读者发送的，通常会携带数据，而非定向心跳是广播给所有读者的心跳，通常不携带数据。
+为了防止定向心跳（FINAL标志位清除）触发所有读者的 AckNack，而不仅仅是定向的读者，需要跟踪每个读者-代理写入者对的最后一个心跳计数值。
+如果不介意额外的 AckNack，也可以只跟踪代理写入者的计数，并将所有传入的心跳都视为非定向的。
+简而言之，这段注释说明了通过跟踪每个读者-代理写入者对的最后一个心跳计数值，可以更好地处理定向心跳和非定向心跳，避免触发不必要的 AckNack。
+     
+     */
   m->prev_heartbeat = 0;
   m->hb_timestamp.v = 0;
   m->t_heartbeat_accepted.v = 0;
@@ -1038,6 +1054,16 @@ void ddsi_proxy_writer_add_connection (struct ddsi_proxy_writer *pwr, struct dds
        reader for the oldest samples and so this reader may end up
        with a partial set of old-ish samples.  Even when both are
        using KEEP_ALL and the connection doesn't fail ... */
+       
+       /*
+       这段注释描述了在代理写入者（proxy writer）尚未收到心跳时的处理逻辑。
+
+具体来说：
+
+当代理写入者尚未收到心跳时，系统无法确定从哪个序列号开始接受数据，也无法确定历史数据的结束和实时数据的开始。
+对于临时局部（transient-local）的读者（reader），它应始终获取所有历史数据，因此可以始终处于“不同步”的状态。如果对方是Cyclone，则可以始终从序列号1开始。
+对于非Cyclone的情况，如果读者是易失性的（volatile），我们必须从最近的样本开始。尽管这意味着在与读者匹配后写入的第一个样本可能会丢失。与此相反，另一种选择不仅会获得太多的历史数据，而且可能导致“样本丢失”通知，因为写入者（writer）可能不会为该读者保留最旧的样本。即使两者都使用KEEP_ALL并且连接不会失败...。
+       */
     if (rd->handle_as_transient_local)
       m->in_sync = PRMSS_OUT_OF_SYNC;
     else if (ddsi_vendor_is_eclipse (pwr->c.vendor))
@@ -1065,6 +1091,13 @@ void ddsi_proxy_writer_add_connection (struct ddsi_proxy_writer *pwr, struct dds
      sending pre-emptive ones until the proxy writer receives a heartbeat.
      (We really only need a pre-emptive AckNack per proxy writer, but
      hopefully it won't make that much of a difference in practice.) */
+
+     /*
+     规范（Spec）指出，系统可以发送预先发出的 AckNack，即在未收到数据时提前发送 AckNack。
+为了实现这一点，系统会在配置的延迟之后调度发送预先发出的 AckNack。
+一旦开始发送预先发出的 AckNack，系统会继续发送，直到代理写入者（proxy writer）收到一个心跳为止。
+尽管实际上每个代理写入者只需要发送一个预先发出的 AckNack，但系统会保持发送，希望这样做不会在实践中产生太大的影响。
+     */
   if (rd->reliable)
   {
     uint32_t secondary_reorder_maxsamples = pwr->e.gv->config.secondary_reorder_maxsamples;

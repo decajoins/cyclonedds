@@ -149,7 +149,7 @@ typedef struct ddsi_rtps_info_src {
 
 typedef struct ddsi_rtps_msg_len {
   ddsi_rtps_submessage_header_t smhdr;
-  uint32_t length;
+  uint32_t length;//消息总长度
 } ddsi_rtps_msg_len_t;
 
 #define DDSI_PARTICIPANT_MESSAGE_DATA_KIND_UNKNOWN 0x0u

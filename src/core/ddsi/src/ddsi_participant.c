@@ -980,9 +980,11 @@ static dds_return_t new_participant_guid (ddsi_guid_t *ppguid, struct ddsi_domai
   }
 
   /* Make it globally visible, else the endpoint matching won't work. */
+  // 函数将参与者插入全局实体索引中。
   ddsi_entidx_insert_participant_guid (gv->entity_index, pp);
 
   /* add all built-in endpoints other than the SPDP writer */
+  //调用 add_builtin_endpoints 函数为参与者添加内置端点，除了 SPDP 写者之外的所有内置端点
   add_builtin_endpoints (pp, &subguid, &group_guid, gv, !(flags & RTPS_PF_NO_BUILTIN_WRITERS), !(flags & RTPS_PF_NO_BUILTIN_READERS));
 
   /* If the participant doesn't have the full set of builtin writers
@@ -991,6 +993,7 @@ static dds_return_t new_participant_guid (ddsi_guid_t *ppguid, struct ddsi_domai
      If it is the privileged participant, set the global variable
      pointing to it.
      Except when the participant is only locally available. */
+     //如果参与者不是仅在本地可用的，且没有完整的内置写者集合，则依赖特权参与者。
   if (!(flags & RTPS_PF_ONLY_LOCAL))
   {
     ddsrt_mutex_lock (&gv->privileged_pp_lock);
@@ -999,6 +1002,7 @@ static dds_return_t new_participant_guid (ddsi_guid_t *ppguid, struct ddsi_domai
       /* Simply crash when the privileged participant doesn't exist when
          it is needed.  Its existence is a precondition, and this is not
          a public API */
+         //在这种情况下，会增加特权参与者的引用计数，并在需要时设置全局指针指向它。
       assert (gv->privileged_pp != NULL);
       ddsi_ref_participant (gv->privileged_pp, &pp->e.guid);
     }
@@ -1014,6 +1018,7 @@ static dds_return_t new_participant_guid (ddsi_guid_t *ppguid, struct ddsi_domai
 
   /* All attributes set, anyone looking for a built-in topic writer can
      now safely do so */
+     //将参与者的状态设置为操作中
   ddsrt_mutex_lock (&pp->refc_lock);
   pp->state = DDSI_PARTICIPANT_STATE_OPERATIONAL;
   ddsrt_mutex_unlock (&pp->refc_lock);
@@ -1021,6 +1026,7 @@ static dds_return_t new_participant_guid (ddsi_guid_t *ppguid, struct ddsi_domai
   /* Signal receive threads if necessary. Must do this after adding it
      to the entity index, or the receive thread won't find the new
      participant */
+     //如果配置允许多个套接字模式，会增加参与者集合的生成数，并触发接收线程。
   if (gv->config.many_sockets_mode == DDSI_MSM_MANY_UNICAST)
   {
     ddsrt_atomic_fence ();
@@ -1028,12 +1034,14 @@ static dds_return_t new_participant_guid (ddsi_guid_t *ppguid, struct ddsi_domai
     ddsi_trigger_recv_threads (gv);
   }
 
+  //函数写入内置主题端点。( //调用 dds_writecdr_local_orphan_impl 函数执行本地的写入操作，将数据写入内置主题。)
   ddsi_builtintopic_write_endpoint (gv->builtin_topic_interface, &pp->e, ddsrt_time_wallclock(), true);
 
   /* SPDP periodic broadcast uses the retransmit path, so the initial
      publication must be done differently. Must be later than making
      the participant globally visible, or the SPDP processing won't
      recognise the participant as a local one. */
+     //ddsi_spdp_write(pp) 函数用于写入初始样本。如果写入成功（返回值大于或等于0），则表示初始样本已经成功发送到网络中。
   if (ddsi_spdp_write (pp) >= 0)
   {
     /* Once the initial sample has been written, the automatic and
@@ -1045,6 +1053,7 @@ static dds_return_t new_participant_guid (ddsi_guid_t *ppguid, struct ddsi_domai
        accepted, all is lost, but we continue nonetheless, even though
        the participant won't be able to discover or be discovered.  */
     struct ddsi_spdp_broadcast_xevent_cb_arg arg = { .pp_guid = pp->e.guid };
+    //一旦初始样本发送成功，SPDP开始自动和异步广播。这意味着参与者会定期发送广播消息，以便其他参与者可以发现它。
     pp->spdp_xevent = ddsi_qxev_callback (gv->xevents, ddsrt_mtime_add_duration (ddsrt_time_monotonic (), DDS_MSECS (100)), ddsi_spdp_broadcast_xevent_cb, &arg, sizeof (arg), false);
   }
 

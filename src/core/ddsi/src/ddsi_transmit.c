@@ -383,8 +383,11 @@ static void transmit_sample_lgmsg_unlocks_wr (struct ddsi_xpack *xp, struct ddsi
   const char *frags_to_skip = getenv ("SKIPFRAGS");
 #endif
   assert(xp);
+  //根据传入的参数确定需要传输的分片数量 nfrags，以及一个消息中最大的分片数量 nfrags_lim
   assert(0 < nfrags_lim && nfrags_lim <= nfrags);
   uint32_t nf_in_submsg = isnew ? (wr->e.gv->config.max_msg_size / wr->e.gv->config.fragment_size) : 1;
+  //根据是否是新样本以及配置的最大消息大小和分片大小确定每个子消息中的分片数量 nf_in_submsg。如果配置的最大消息大小除以分片大小超过了 UINT16_MAX，则将 nf_in_submsg 设置为 UINT16_MAX。
+  //（nf_in_submsg大约==10），如果实际需要发送的frag比该值小，则取实际大小
   if (nf_in_submsg == 0)
     nf_in_submsg = 1;
   else if (nf_in_submsg > UINT16_MAX)
@@ -399,6 +402,8 @@ static void transmit_sample_lgmsg_unlocks_wr (struct ddsi_xpack *xp, struct ddsi
       continue;
 #endif
 
+//然后，使用循环来遍历每个分片，根据 nf_in_submsg 生成相应的分片消息，并在需要时生成心跳消息。
+//在生成分片消息时，调用 ddsi_create_fragment_message 函数创建分片消息，并根据是否是最后一个分片确定是否需要生成心跳消息。
     if (nf_in_submsg > nfrags_lim - i)
       nf_in_submsg = nfrags_lim - i;
 
@@ -410,10 +415,11 @@ static void transmit_sample_lgmsg_unlocks_wr (struct ddsi_xpack *xp, struct ddsi
     if (ret >= 0 && i + nf_in_submsg < nfrags_lim && wr->heartbeat_xevent)
     {
       // more fragment messages to come
+      //在生成每个分片消息时都会检查是否还有更多的分片需要发送，如果有，则在当前分片消息的最后一个分片上附加心跳消息。这样做的目的是确保在传输大样本时，如果传输过程中出现了网络延迟或丢包，接收方仍然能够根据心跳消息判断是否有分片消息丢失，并进行相应的重传。
       create_HeartbeatFrag (wr, seq, i + nf_in_submsg - 1, prd, &hmsg);
     }
     ddsrt_mutex_unlock (&wr->e.lock);
-
+//最后，将生成的分片消息和心跳消息添加到消息包中，并在每次处理完一个分片后释放写者的互斥锁，以允许其他线程访问写者。
     if(fmsg) ddsi_xpack_addmsg (xp, fmsg, 0);
     if(hmsg) ddsi_xpack_addmsg (xp, hmsg, 0);
 
@@ -433,6 +439,7 @@ static void transmit_sample_unlocks_wr (struct ddsi_xpack *xp, struct ddsi_write
 
   sz = ddsi_serdata_size (serdata);
   //如果样本的大小超过配置的分片大小（gv->config.fragment_size）或者不是新样本（isnew 为假）或者存在代理读者（prd != NULL）或者写者属于子消息保护模式（ddsi_omg_writer_is_submessage_protected 返回真），则需要进行分片处理。
+ //如果数据大于fragment_size（1344）时，会走large msg发送接口transmit_sample_lgmsg_unlocks_wr，但数据只有大于max_msg_size （14720）才会真正分包，使用datafrag
   if (sz > gv->config.fragment_size || !isnew || prd != NULL || ddsi_omg_writer_is_submessage_protected (wr))
   {
     assert (wr->init_burst_size_limit <= UINT32_MAX - UINT16_MAX);
@@ -649,28 +656,37 @@ static dds_return_t throttle_writer (struct ddsi_thread_state * const thrst, str
      writer. */
   struct ddsi_domaingv const * const gv = wr->e.gv;
   dds_return_t result = DDS_RETCODE_OK;
+  //获取当前的系统时间，并将其存储在名为 throttle_start 的变量中。
   const ddsrt_mtime_t throttle_start = ddsrt_time_monotonic ();
+  //计算超时时间，将 throttle_start 和 wr->xqos->reliability.max_blocking_time 相加，并将结果存储在名为 abstimeout 的变量中。
   const ddsrt_mtime_t abstimeout = ddsrt_mtime_add_duration (throttle_start, wr->xqos->reliability.max_blocking_time);
   ddsrt_mtime_t tnow = throttle_start;
   struct ddsi_whc_state whcst;
+  //获取写入者关联的历史缓存（write history cache）的当前状态，并将状态信息存储在名为 whcst 的结构中。
   ddsi_whc_get_state (wr->whc, &whcst);
 
+//进行一系列断言，确保写入者的互斥锁已被持有，throttling 标志为零，当前线程处于唤醒状态，并且写入者的 GUID 不是内置实体。
   {
     ASSERT_MUTEX_HELD (&wr->e.lock);
     assert (wr->throttling == 0);
     assert (ddsi_thread_is_awake ());
     assert (!ddsi_is_builtin_entityid(wr->e.guid.entityid, DDSI_VENDORID_ECLIPSE));
   }
-
+//记录日志，指示写入者正在等待历史缓存（whc）收缩至低水位以下的状态。
   GVLOG (DDS_LC_THROTTLE,
          "writer "PGUIDFMT" waiting for whc to shrink below low-water mark (whc %"PRIuSIZE" low=%"PRIu32" high=%"PRIu32")\n",
          PGUID (wr->e.guid), whcst.unacked_bytes, wr->whc_low, wr->whc_high);
+         //增加 throttling 计数器，并将 throttle_count 计数器加一，表示写入者正在被限流。
   wr->throttling++;
   wr->throttle_count++;
 
   /* Force any outstanding packet out: there will be a heartbeat
      requesting an answer in it.  FIXME: obviously, this is doing
      things the wrong way round ... */
+     //  // 发送心跳消息（heartbeat）
+  // TODO: 描述心跳消息的创建和发送
+  // 更新 whcst 的状态信息
+     //writer重新传输对应数据包，则直接阻塞，进入阻塞前，会发一个心跳包，然后等100ms内对端是否回复ack达到wch的低水位线，如果满足要求才能继续发送数据，不然直接丢弃该报文不发送
   if (xp)
   {
     struct ddsi_xmsg *hbmsg = ddsi_writer_hbcontrol_create_heartbeat (wr, &whcst, tnow, 1, 1);
@@ -683,7 +699,7 @@ static dds_return_t throttle_writer (struct ddsi_thread_state * const thrst, str
     ddsrt_mutex_lock (&wr->e.lock);
     ddsi_whc_get_state (wr->whc, &whcst);
   }
-
+//进入一个循环，条件是保持 rtps 运行且写入者不能继续进行操作（即 writer_may_continue 返回假）。
   while (ddsrt_atomic_ld32 (&gv->rtps_keepgoing) && !writer_may_continue (wr, &whcst))
   {
     int64_t reltimeout;
@@ -703,12 +719,13 @@ static dds_return_t throttle_writer (struct ddsi_thread_state * const thrst, str
       break;
     }
   }
-
+//减少 throttling 计数器，记录写入者被限流的时间
   wr->throttling--;
   wr->time_throttled += (uint64_t) (ddsrt_time_monotonic().v - throttle_start.v);
   if (wr->state != WRST_OPERATIONAL)
   {
     /* gc_delete_writer may be waiting */
+    //// 如果写入者的状态不是 WRST_OPERATIONAL，则唤醒等待的 gc_delete_writer 函数
     ddsrt_cond_broadcast (&wr->throttle_cond);
   }
 

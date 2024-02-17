@@ -321,10 +321,12 @@ struct ddsi_serdata *dds__builtin_make_sample_proxy_topic (const struct ddsi_pro
 static void dds__builtin_write_endpoint (const struct ddsi_entity_common *e, ddsrt_wctime_t timestamp, bool alive, void *vdomain)
 {
   struct dds_domain *dom = vdomain;
+  //使用 dds__builtin_is_visible 函数判断给定实体是否对给定域可见。如果不可见，则不执行写入操作
   if (dds__builtin_is_visible (&e->guid, ddsi_get_entity_vendorid (e), dom))
   {
     /* initialize to avoid gcc warning ultimately caused by C's horrible type system */
     struct ddsi_local_orphan_writer *bwr = NULL;
+    //使用 dds__builtin_make_sample_endpoint 函数根据实体信息、时间戳和活动状态构造序列化的数据
     struct ddsi_serdata *serdata = dds__builtin_make_sample_endpoint (e, timestamp, alive);
     assert (e->tk != NULL);
     switch (e->kind)
@@ -345,6 +347,7 @@ static void dds__builtin_write_endpoint (const struct ddsi_entity_common *e, dds
         abort ();
         break;
     }
+    //调用 dds_writecdr_local_orphan_impl 函数执行本地的写入操作，将数据写入内置主题。
     dds_writecdr_local_orphan_impl (bwr, serdata);
   }
 }

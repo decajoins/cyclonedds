@@ -138,7 +138,7 @@ static void dds_ostream_grow (dds_ostream_t * __restrict os, const struct dds_cd
   uint32_t needed = size + os->m_index;
 
   /* Reallocate on 4k boundry */
-
+//请的序列化的内存大小，不包括ddsi_serdata_default结构体，在实际序列化时，如果实际数据大小超过该尺寸会重新申请，申请大小按4K对齐（VIU申请512字节）
   uint32_t new_size = (needed & ~(uint32_t)0xfff) + 0x1000;
   uint8_t *old = os->m_buffer;
 
@@ -1318,6 +1318,7 @@ bool dds_stream_write_sampleLE (dds_ostreamLE_t * __restrict os, const struct dd
   size_t opt_size = os->x.m_xcdr_version == DDSI_RTPS_CDR_ENC_VERSION_1 ? desc->opt_size_xcdr1 : desc->opt_size_xcdr2;
   if (opt_size && desc->align && (((struct dds_ostream *)os)->m_index % desc->align) == 0)
   {
+    //resize操作
     dds_os_put_bytes ((struct dds_ostream *)os, allocator, data, (uint32_t) opt_size);
     return true;
   }

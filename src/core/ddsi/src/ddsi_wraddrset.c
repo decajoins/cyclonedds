@@ -266,21 +266,26 @@ static int wras_compare_locs (const void *va, const void *vb)
     return ddsi_compare_xlocators (&u, &v);
   }
 }
-
+//是对地址集合中的所有地址进行归类，将具有相同IP、端口和类型的地址合并为一个定位器。
 static struct locset *wras_calc_locators (const struct ddsrt_log_cfg *logcfg, struct ddsi_addrset *all_addrs)
 {
+  //调用wras_flatten_locs函数将地址集合all_addrs扁平化为一个定位器集合，并将结果存储在ls中。
   struct locset *ls = wras_flatten_locs (all_addrs);
   int i, j;
   /* We want MC gens just once for each IP,BASE,COUNT pair, not once for each node */
   i = 0; j = 1;
+  //接着，对定位器集合进行排序，以便后续去重操作
   qsort (ls->locs, (size_t) ls->nlocs, sizeof (*ls->locs), wras_compare_locs);
+  //使用双指针法遍历定位器集合，保留唯一的定位器。具体做法是，当当前定位器与下一个定位器不相同时，将下一个定位器的值复制到当前位置的下一个位置，并将指针i向前移动一个位置。
   while (j < ls->nlocs)
   {
     if (wras_compare_locs (&ls->locs[i], &ls->locs[j]) != 0)
       ls->locs[++i] = ls->locs[j];
     j++;
   }
+  //更新定位器集合的大小为去重后的大小。
   ls->nlocs = i+1;
+  //最后，记录去重后定位器集合的大小，并返回该定位器集合。
   DDS_CLOG (DDS_LC_DISCOVERY, logcfg, "reduced nlocs=%d\n", ls->nlocs);
   return ls;
 }
@@ -493,6 +498,26 @@ static bool wras_cover_locatorset (struct ddsi_domaingv const * const gv, struct
 
 static bool wras_calc_cover (const struct ddsi_writer *wr, const struct locset *locs, struct cover **pcov) ddsrt_attribute_warn_unused_result;
 
+/*
+假设有一个写者（Publisher）wr，它需要向三个代理读者（Proxy Readers）发送数据。这三个代理读者分别是 A、B 和 C。写者和代理读者之间的匹配关系已经建立好了。
+
+写者和代理读者之间的匹配关系如下：
+
+代理读者 A：需要从写者接收数据，并且不支持冗余网络传输。
+代理读者 B：需要从写者接收数据，并且支持冗余网络传输。
+代理读者 C：需要从写者接收数据，并且不支持冗余网络传输。
+现在让我们来解释代码中的主要步骤：
+
+遍历每个代理读者，并根据其配置计算覆盖矩阵。
+
+对于代理读者 A，由于它不支持冗余网络传输，因此只需要计算单个网络路径。这个路径包含了写者和代理读者 A 之间的所有定位器（例如 IP 地址、端口等）。
+
+对于代理读者 B，由于它支持冗余网络传输，需要考虑可能的网络重复。因此，可能会存在多个连接路径。例如，如果代理读者 B 与写者之间有两条不同的网络路径，那么就需要计算两个连接路径的覆盖矩阵，并为每个路径分配一个代表名称。
+
+对于代理读者 C，与代理读者 A 类似，只需要计算单个网络路径。
+
+通过这个例子，我们可以更清晰地理解代码中的逻辑：根据每个代理读者的配置，计算覆盖矩阵，确定数据的传输路径和网络配置。
+*/
 static bool wras_calc_cover (const struct ddsi_writer *wr, const struct locset *locs, struct cover **pcov)
 {
   struct ddsi_domaingv * const gv = wr->e.gv;
@@ -646,7 +671,7 @@ static void wras_trace_cover (const struct ddsi_domaingv *gv, const struct locse
     GVLOGDISC (" }\n");
   }
 }
-
+//根据一定的规则选择最佳的定位器，以便在数据传输过程中使用最优的网络接口或地址。
 static int wras_choose_locator (const struct locset *locs, const struct costmap *wm)
 {
   // general preference for unicast is by having a larger base cost for a multicast
@@ -749,16 +774,19 @@ struct ddsi_addrset *ddsi_compute_writer_addrset (const struct ddsi_writer *wr)
 
   // Gather all addresses, using an addrset means no need to worry about
   // duplicates. If no addresses found it is trivial.
+  //调用wras_collect_all_locs函数来收集所有的地址，并存储在all_addrs中。如果没有找到任何地址，则直接返回一个空的地址集合。
   {
     struct ddsi_addrset *all_addrs = wras_collect_all_locs (wr);
     if (ddsi_addrset_empty (all_addrs))
       return all_addrs;
     ddsi_log_addrset (gv, DDS_LC_DISCOVERY, "setcover: all_addrs", all_addrs);
     ELOGDISC (wr, "\n");
+    //使用收集到的所有地址来计算定位器（locator）的集合locs。
     locs = wras_calc_locators (&gv->logconfig, all_addrs);
     ddsi_unref_addrset (all_addrs);
   }
-
+  //调用wras_calc_cover函数来计算覆盖集（covered）。如果计算失败，则说明在工作期间某些代理读者的地址无法在所有地址中找到，
+  //这意味着它的地址集合在我们进行计算时发生了更改。在这种情况下，返回旧的地址集合wr->as。
   if (!wras_calc_cover (wr, locs, &covered))
   {
     // Addrset computation fails when some proxy reader's address can't be found in all_addrs,
@@ -768,11 +796,14 @@ struct ddsi_addrset *ddsi_compute_writer_addrset (const struct ddsi_writer *wr)
     // FIXME: copying it is a bit excessive (a little rework and refcount manipulation suffices)
     newas = ddsi_ref_addrset (wr->as);
   }
+  //如果没有覆盖集（covered == NULL），则表示没有读者，因此不需要进行进一步的操作，直接返回一个空的地址集合。
   else if (covered == NULL)
   {
     // No readers, no need to do anything else
     newas = ddsi_new_addrset ();
   }
+  //如果存在覆盖集，则根据定位器的代价图（costmap）选择最佳的定位器，并将其添加到新的地址集合newas中。
+  //然后，从覆盖集中移除已经被选择的读者，并继续选择下一个最佳的定位器，直到找不到更多的最佳定位器。最后，释放分配的内存并返回新的地址集合newas。
   else
   {
     assert(wr->xqos->present & DDSI_QP_LOCATOR_MASK);
