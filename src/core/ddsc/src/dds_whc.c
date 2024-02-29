@@ -862,6 +862,7 @@ static uint32_t whc_default_remove_acked_messages_noidx (struct whc_impl *whc, d
 
   /* In the trivial case of an empty WHC, get out quickly */
   //（1）	首先判断whc中保存的已经丢掉的数据的序列号比现在要丢的序列号还大（说明在丢这个数据之前已经丢过更大的序列号的数据了），直接返回
+  //max_drop_seq 用于比较当前最大可丢弃序列号与 WHC 结构体中记录的最大可丢弃序列号，以确定是否需要更新最大可丢弃序列号。最大丢失序列号表示当前写者已发送但尚未收到确认的最大序列号，因此用于确定需要保留的历史消息数量。（这里错了，应该是最小ACK号）
   if (max_drop_seq <= whc->max_drop_seq || whc->maxseq_node == NULL)
   {
     if (max_drop_seq > whc->max_drop_seq)
@@ -1438,20 +1439,28 @@ static int whc_default_insert (struct ddsi_whc *whc_generic, ddsi_seqno_t max_dr
       ddsi_deadline_renew_instance_locked (&whc->deadline, &idxn->deadline);
 #endif
 //如果未找到相同的索引节点 idxn，表示是新的键，执行插入新键的操作。idxdepth > 0:keeplast
+//：检查是否配置了索引深度。
       if (whc->wrinfo.idxdepth > 0)
       {
         struct dds_whc_default_node *oldn;
+        //如果索引节点的头部索引加一等于索引深度，则将头部索引重置为0。
         if (++idxn->headidx == whc->wrinfo.idxdepth)
           idxn->headidx = 0;
+          //检查索引节点中的头部历史数据是否为空。
         if ((oldn = idxn->hist[idxn->headidx]) != NULL)
         {
           TRACE (" overwrite whcn %p", (void *)oldn);
+          //将旧的历史节点的索引节点指针设为NULL，表示不再属于这个索引节点。
           oldn->idxnode = NULL;
         }
+        //新的节点添加到索引节点的历史数据中。
         idxn->hist[idxn->headidx] = newn;
+        //设置新节点的索引节点指针为当前索引节点。
         newn->idxnode = idxn;
+        //记录新节点在索引节点历史数据数组中的位置。
         newn->idxnode_pos = idxn->headidx;
 
+//接下来是一系列条件判断和操作，用于根据配置的历史数据保留策略对历史数据进行清理和维护。
         if (oldn && (whc->wrinfo.hdepth > 0 || oldn->common.seq <= max_drop_seq) && (!whc->wrinfo.is_transient_local || whc->wrinfo.tldepth > 0))
         {
           TRACE (" prune whcn %p", (void *)oldn);

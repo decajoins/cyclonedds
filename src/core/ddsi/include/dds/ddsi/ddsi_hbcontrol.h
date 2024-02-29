@@ -26,13 +26,14 @@ extern "C" {
 /// Because readers are not allowed to request a retransmit unless they received a heartbeat, we make an
 /// effort to a embed heartbeat in an outgoing RTPS message (~ a packet) if a preceding RTPS message
 /// also contained data from the writer. Its sole purpose is to allow it to request a retransmit.
+//为什么在发送消息时会努力在前面的消息中嵌入心跳。其目的是为了允许读者请求重传
 struct ddsi_hbcontrol {
-  ddsrt_mtime_t t_of_last_write; ///< Time of most recent write
-  ddsrt_mtime_t t_of_last_hb;    ///< Time of last heartbeat sent
-  ddsrt_mtime_t t_of_last_ackhb; ///< Time of last heartbeat sent that requires a response
-  ddsrt_mtime_t tsched;          ///< Time at which next asynchronous heartbeat is scheduled
-  uint32_t hbs_since_last_write; ///< Number of heartbeats sent since last write
-  uint32_t last_packetid;        ///< Last RTPS message id containing a heartbeat from this writer
+  ddsrt_mtime_t t_of_last_write; ///< Time of most recent write //记录了最近一次写入操作的时间
+  ddsrt_mtime_t t_of_last_hb;    ///< Time of last heartbeat sent //记录了最近一次发送心跳的时间。
+  ddsrt_mtime_t t_of_last_ackhb; ///< Time of last heartbeat sent that requires a response  //录了最近一次需要响应的心跳发送的时间。
+  ddsrt_mtime_t tsched;          ///< Time at which next asynchronous heartbeat is scheduled //下一次异步心跳计划发送的时间。
+  uint32_t hbs_since_last_write; ///< Number of heartbeats sent since last write//上次写入操作以来发送的心跳数量。
+  uint32_t last_packetid;        ///< Last RTPS message id containing a heartbeat from this writer // 记录了包含来自该写入者的心跳的最后一个 RTPS 消息的 ID。
 };
 
 /// @brief Encoding for possible ways of adding heartbeats to messages

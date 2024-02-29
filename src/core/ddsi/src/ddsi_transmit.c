@@ -46,6 +46,9 @@ static const struct ddsi_wr_prd_match *root_rdmatch (const struct ddsi_writer *w
   return ddsrt_avl_root (&ddsi_wr_readers_treedef, &wr->readers);
 }
 
+//首先，它检查写入器的读取器集合是否为空，如果为空，则意味着没有订阅者，因此返回 0。
+//否则，它检查根读取器匹配的最小序列号是否为 DDSI_MAX_SEQ_NUMBER。如果是 DDSI_MAX_SEQ_NUMBER，表示所有订阅者都处于不可靠的状态（即尚未收到任何数据），因此返回 0。
+//如果存在具有可靠数据的订阅者，则返回 1。
 static int have_reliable_subs (const struct ddsi_writer *wr)
 {
   if (ddsrt_avl_is_empty (&wr->readers) || root_rdmatch (wr)->min_seq == DDSI_MAX_SEQ_NUMBER)
@@ -57,6 +60,10 @@ static int have_reliable_subs (const struct ddsi_writer *wr)
 static dds_return_t ddsi_create_fragment_message_simple (struct ddsi_writer *wr, ddsi_seqno_t seq, struct ddsi_serdata *serdata, struct ddsi_xmsg **pmsg)
 {
 #define TEST_KEYHASH 0
+/*
+我们声明了一些变量，包括期望的内联 QoS 大小、指向 domaingv 结构的指针 gv、一个消息标记 sm_marker、一个指向消息的指针 sm、
+一个指向数据片段通用结构的指针 ddcmn、一个表示是否需要分片的布尔值 fragging、片段的起始位置和长度等。我们还根据 isnew 参数确定消息的类型。
+*/
   /* actual expected_inline_qos_size is typically 0, but always claiming 32 bytes won't make
      a difference, so no point in being precise */
   const size_t expected_inline_qos_size = /* statusinfo */ 8 + /* keyhash */ 20 + /* sentinel */ 4;
@@ -164,6 +171,7 @@ dds_return_t ddsi_create_fragment_message (struct ddsi_writer *wr, ddsi_seqno_t 
   fragging = (nfrags * (uint32_t) gv->config.fragment_size < size);
 
   /* INFO_TS: 12 bytes, ddsi_rtps_datafrag_t: 36 bytes, expected inline QoS: 32 => should be single chunk */
+  //我们通过调用 ddsi_xmsg_new 函数来创建一个新的消息，并设置其目标地址或代理读者，根据是否存在代理读者而有所区别。
   if ((*pmsg = ddsi_xmsg_new (gv->xmsgpool, &wr->e.guid, wr->c.pp, sizeof (ddsi_rtps_info_ts_t) + sizeof (ddsi_rtps_datafrag_t) + expected_inline_qos_size, xmsg_kind)) == NULL)
     return DDS_RETCODE_OUT_OF_RESOURCES;
 
@@ -179,14 +187,16 @@ dds_return_t ddsi_create_fragment_message (struct ddsi_writer *wr, ddsi_seqno_t 
   }
 
   /* Timestamp only needed once, for the first fragment */
+  //如果这是第一个片段，我们就添加一个时间戳。
   if (fragnum == 0)
   {
     ddsi_xmsg_add_timestamp (*pmsg, serdata->timestamp);
   }
-
+  //在这里，我们根据是否需要分片，选择分配足够的内存空间来添加数据片段或整个数据。
   sm = ddsi_xmsg_append (*pmsg, &sm_marker, fragging ? sizeof (ddsi_rtps_datafrag_t) : sizeof (ddsi_rtps_data_t));
   ddcmn = sm;
-
+  //根据是否需要进行分片，选择添加数据或数据片段
+  // // 数据未分片，添加数据
   if (!fragging)
   {
     unsigned char contentflag = 0;
@@ -207,26 +217,31 @@ dds_return_t ddsi_create_fragment_message (struct ddsi_writer *wr, ddsi_seqno_t 
     if (wr->reliable)
       ddsi_xmsg_setwriterseq (*pmsg, &wr->e.guid, seq);
   }
+  // 数据已分片，添加数据片段
   else
-  {
+  {//这一行根据 serdata 中的数据类型（在 SDK_KEY 中指示键数据），确定是否设置片段标志位 contentflag。如果数据类型为键数据，则设置 contentflag 为 DDSI_DATAFRAG_FLAG_KEYFLAG，否则设置为 0。
     const unsigned char contentflag = (serdata->kind == SDK_KEY ? DDSI_DATAFRAG_FLAG_KEYFLAG : 0);
+    //这里声明了一个指针 frag，指向当前消息中的数据片段结构
     ddsi_rtps_datafrag_t *frag = sm;
     /* empty means size = 0, which means it never needs fragmenting */
     assert (serdata->kind != SDK_EMPTY);
+    //这行代码初始化一个新的数据片段子消息，并将其添加到消息中。
     ddsi_xmsg_submsg_init (*pmsg, sm_marker, DDSI_RTPS_SMID_DATA_FRAG);
+    //这行代码设置消息头的标志位，将 contentflag 加入到消息头的标志位中，以指示消息中包含数据内容。
     ddcmn->smhdr.flags = (unsigned char) (ddcmn->smhdr.flags | contentflag);
-
+    //这里设置了数据片段结构中的一些字段，包括片段的起始编号、子消息中的片段数量、片段的大小以及样本的大小。
     frag->fragmentStartingNum = fragnum + 1;
     frag->fragmentsInSubmessage = nfrags;
     frag->fragmentSize = gv->config.fragment_size;
     frag->sampleSize = (uint32_t) size;
-
+  //计算了当前片段的起始位置和长度。起始位置由片段编号乘以片段大小得出，而长度由片段数量乘以片段大小得出。然后检查长度是否超出了样本的大小，并做相应的调整。
     fragstart = fragnum * (uint32_t) gv->config.fragment_size;
     fraglen = (uint32_t) gv->config.fragment_size * (uint32_t) frag->fragmentsInSubmessage;
     if (fragstart + fraglen > size)
       fraglen = (uint32_t) (size - fragstart);
+      //这行代码计算了内联 QoS 所需的字节数，并将其保存在消息头中。
     ddcmn->octetsToInlineQos = (unsigned short) ((char*) (frag+1) - ((char*) &ddcmn->octetsToInlineQos + 2));
-
+    //这部分代码根据消息类型和是否为最后一个片段，设置了写入者的序列号和片段 ID。
     if (wr->reliable && (!isnew || advertised_fragnum != UINT32_MAX))
     {
       /* only set for final fragment for new messages; for rexmits we
@@ -267,7 +282,7 @@ dds_return_t ddsi_create_fragment_message (struct ddsi_writer *wr, ddsi_seqno_t 
       ddcmn->smhdr.flags |= DDSI_DATAFRAG_FLAG_INLINE_QOS;
     }
   }
-
+//将数据序列化并设置消息的下一个子消息。
   ddsi_xmsg_serdata (*pmsg, serdata, fragstart, fraglen, wr);
   ddsi_xmsg_submsg_setnext (*pmsg, sm_marker);
 #if 0
@@ -275,11 +290,12 @@ dds_return_t ddsi_create_fragment_message (struct ddsi_writer *wr, ddsi_seqno_t 
            fragging ? "frag" : "", PGUID (wr->e.guid),
            seq, fragnum+1, fragstart, fragstart + fraglen);
 #endif
-
+//对数据写入的消息进行安全加密，并检查编码后是否有内容。
   ddsi_security_encode_datawriter_submsg(*pmsg, sm_marker, wr);
 
   /* It is possible that the encoding removed the submessage.
    * If there is no content, free the message. */
+  //如果没有内容，释放消息。
   if (ddsi_xmsg_size(*pmsg) == 0) {
       ddsi_xmsg_free (*pmsg);
       *pmsg = NULL;
@@ -445,8 +461,17 @@ static void transmit_sample_unlocks_wr (struct ddsi_xpack *xp, struct ddsi_write
     assert (wr->init_burst_size_limit <= UINT32_MAX - UINT16_MAX);
     assert (wr->rexmit_burst_size_limit <= UINT32_MAX - UINT16_MAX);
     const uint32_t max_burst_size = isnew ? wr->init_burst_size_limit : wr->rexmit_burst_size_limit;
+    //将数据大小除以分片大小并向上取整，得到数据样本需要分成的分片数量
     const uint32_t nfrags = (sz + gv->config.fragment_size - 1) / gv->config.fragment_size;
+    /*
+    nfrags = (sz + gv->config.fragment_size - 1) / gv->config.fragment_size
+       = (2000 + 1000 - 1) / 1000
+       = 2999 / 1000
+       ≈ 2.999
+由于除法是整数除法，结果将被截断为整数部分，即向下取整。所以在这个例子中，nfrags 的值将为 2，意味着数据样本需要被分成 2 个分片。
+    */
     uint32_t nfrags_lim;
+    //如果数据大小小于等于最大突发传输大小或者写者的可靠读者数不等于写者的读者总数，则允许发送整个数据样本；否则，根据最大突发传输大小限制分片数量。
     if (sz <= max_burst_size || wr->num_reliable_readers != wr->num_readers)
       nfrags_lim = nfrags; // if it fits or if there are best-effort readers, send it in its entirety
     else
@@ -509,6 +534,7 @@ int ddsi_enqueue_sample_wrlock_held (struct ddsi_writer *wr, ddsi_seqno_t seq, s
     if (ddsi_create_fragment_message (wr, seq, serdata, i, 1, prd, &fmsg, isnew, (i+1) == nfrags ? i : UINT32_MAX) >= 0)
     {
       if (nfrags > 1 && i + 1 < nfrags)
+      //分片会在最后一片带上分片frag
         create_HeartbeatFrag (wr, seq, i, prd, &hmsg);
     }
     if (isnew)

@@ -294,14 +294,14 @@ struct ddsi_xmsg *ddsi_writer_hbcontrol_piggyback (struct ddsi_writer *wr, const
      reuse the async version. */
   ddsi_writer_hbcontrol_note_asyncwrite (wr, tnow);
 
-  *hbansreq = writer_hbcontrol_ack_required_generic (wr, whcst, tlast, tnow, 1);
+  *hbansreq = writer_hbcontrol_ack_required_generic (wr, whcst, tlast, tnow, 1);//同一包心跳超过80ms
   if (*hbansreq >= DDSI_HBC_ACK_REQ_YES_AND_FLUSH) {
     /* So we force a heartbeat in - but we also rely on our caller to
        send the packet out */
     msg = ddsi_writer_hbcontrol_create_heartbeat (wr, whcst, tnow, *hbansreq, 1);
     if (wr->test_suppress_flush_on_sync_heartbeat)
       *hbansreq = DDSI_HBC_ACK_REQ_YES;
-  } else if (last_packetid != packetid && tnow.v - t_of_last_hb.v > DDS_USECS (100)) {
+  } else if (last_packetid != packetid && tnow.v - t_of_last_hb.v > DDS_USECS (100)) {//不同包心跳超过100ms
     /* If we crossed a packet boundary since the previous write,
        piggyback a heartbeat, with *hbansreq determining whether or
        not an ACK is needed.  We don't force the packet out either:

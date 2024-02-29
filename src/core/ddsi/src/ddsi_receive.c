@@ -600,6 +600,11 @@ static int acknack_is_nack (const ddsi_rtps_acknack_t *msg)
   return x != 0;
 }
 
+/*
+函数用于决定是否接受一个新的确认消息或心跳消息。
+如果新消息的序列号小于或等于之前接收的最高序列号，并且距离上次接收消息的时间不到500毫秒，并且没有强制接受的标志，则拒绝接受该消息。
+否则，更新先前接收的最高序列号和最后一次接收消息的时间，并接受新消息。
+*/
 static int accept_ack_or_hb_w_timeout (ddsi_count_t new_count, ddsi_count_t *prev_count, ddsrt_etime_t tnow, ddsrt_etime_t *t_last_accepted, int force_accept)
 {
   /* AckNacks and Heartbeats with a sequence number (called "count"
@@ -800,16 +805,21 @@ static int handle_AckNack (struct ddsi_receiver_state *rst, ddsrt_etime_t tnow, 
   struct ddsi_whc_node *deferred_free_list = NULL;
   struct ddsi_whc_state whcst;
   int hb_sent_in_response = 0;
+  //这行代码计算了 countp 的值，它是一个指向消息中确认/否认位的指针，用于统计消息。
   countp = (ddsi_count_t *) ((char *) msg + offsetof (ddsi_rtps_acknack_t, bits) + DDSI_SEQUENCE_NUMBER_SET_BITS_SIZE (msg->readerSNState.numbits));
+  //这里设置了消息的源地址 src 和目标地址 dst。
   src.prefix = rst->src_guid_prefix;
   src.entityid = msg->readerId;
   dst.prefix = rst->dst_guid_prefix;
   dst.entityid = msg->writerId;
+  //这行代码打印了一条日志，包含了收到的 AckNack 消息的一些信息。
   RSTTRACE ("ACKNACK(%s#%"PRId32":%"PRIu64"/%"PRIu32":", msg->smhdr.flags & DDSI_ACKNACK_FLAG_FINAL ? "F" : "",
             *countp, ddsi_from_seqno (msg->readerSNState.bitmap_base), msg->readerSNState.numbits);
+            //这个循环打印了消息中的确认/否认位。
   for (uint32_t i = 0; i < msg->readerSNState.numbits; i++)
     RSTTRACE ("%c", ddsi_bitset_isset (msg->readerSNState.numbits, msg->bits, i) ? '1' : '0');
   seqbase = ddsi_from_seqno (msg->readerSNState.bitmap_base);
+  //这里将消息中的序列号转换为可用的 seqbase，并确保它大于 0。
   assert (seqbase > 0); // documentation, really, to make it obvious that subtracting 1 is ok
 
   if (!rst->forme)
@@ -827,6 +837,7 @@ static int handle_AckNack (struct ddsi_receiver_state *rst, ddsrt_etime_t tnow, 
      the normal pure ack steady state. If (a big "if"!) this shows up
      as a significant portion of the time, we can always rewrite it to
      only retrieve it when needed. */
+     //这段代码尝试查找代理读者（proxy reader），即消息的接收者。即使在正常的纯确认稳定状态下我们不需要它，但还是会尝试查找。如果发现这是一个时间消耗较大的操作，可以考虑在需要时才检索。
   if ((prd = ddsi_entidx_lookup_proxy_reader_guid (rst->gv->entity_index, &src)) == NULL)
   {
     RSTTRACE (" "PGUIDFMT"? -> "PGUIDFMT")", PGUID (src), PGUID (dst));
@@ -841,20 +852,20 @@ static int handle_AckNack (struct ddsi_receiver_state *rst, ddsrt_etime_t tnow, 
 
   if ((lease = ddsrt_atomic_ldvoidp (&prd->c.proxypp->minl_auto)) != NULL)
     ddsi_lease_renew (lease, tnow);
-
+  //如果写入者（writer）不是可靠的，则打印一条相应的日志，并返回 1。
   if (!wr->reliable) /* note: reliability can't be changed */
   {
     RSTTRACE (" "PGUIDFMT" -> "PGUIDFMT" not a reliable writer!)", PGUID (src), PGUID (dst));
     return 1;
   }
-
+//这段代码锁定了写入者（writer）的互斥锁，并检查是否应该忽略 AckNack 消息。
   ddsrt_mutex_lock (&wr->e.lock);
   if (wr->test_ignore_acknack)
   {
     RSTTRACE (" "PGUIDFMT" -> "PGUIDFMT" test_ignore_acknack)", PGUID (src), PGUID (dst));
     goto out;
   }
-
+  //这段代码尝试查找与写入者相关的代理读者（proxy reader），如果找不到，则打印一条相应的日志，并跳转到标签 out。
   if ((rn = ddsrt_avl_lookup (&ddsi_wr_readers_treedef, &wr->readers, &src)) == NULL)
   {
     RSTTRACE (" "PGUIDFMT" -> "PGUIDFMT" not a connection)", PGUID (src), PGUID (dst));
@@ -864,17 +875,18 @@ static int handle_AckNack (struct ddsi_receiver_state *rst, ddsrt_etime_t tnow, 
   /* is_pure_nonhist ack differs from is_pure_ack in that it doesn't
      get set when only historical data is being acked, which is
      relevant to setting "has_replied_to_hb" and "assumed_in_sync". */
+     //用于确定 AckNack 消息的类型
   is_pure_ack = !acknack_is_nack (msg);
   is_pure_nonhist_ack = is_pure_ack && seqbase - 1 >= rn->seq;
   is_preemptive_ack = seqbase < 1 || (seqbase == 1 && *countp == 0);
-
+  //统计了收到的确认和否认消息的数量，并更新了相应的计数器。
   wr->num_acks_received++;
   if (!is_pure_ack)
   {
     wr->num_nacks_received++;
     rn->rexmit_requests++;
   }
-
+  //这段代码根据一些条件检查了确认消息，并相应地更新了状态。
   if (!accept_ack_or_hb_w_timeout (*countp, &rn->prev_acknack, tnow, &rn->t_acknack_accepted, is_preemptive_ack))
   {
     RSTTRACE (" ["PGUIDFMT" -> "PGUIDFMT"])", PGUID (src), PGUID (dst));
@@ -900,19 +912,25 @@ static int handle_AckNack (struct ddsi_receiver_state *rst, ddsrt_etime_t tnow, 
   /* First, the ACK part: if the AckNack advances the highest sequence
      number ack'd by the remote reader, update state & try dropping
      some messages */
+     //如果收到的确认消息的序列号大于当前已确认的序列号，那么更新相应的状态信息，并移除已确认的消息。
   if (seqbase - 1 > rn->seq)
   {
     const uint64_t n_ack = (seqbase - 1) - rn->seq;
     rn->seq = seqbase - 1;
+    //如果当前已确认的最大序列号大于了写者（wr）的最大序列号，则将当前已确认的最大序列号设置为写者的最大序列号。这样做是为了防止读者确认未来的样本，因为我们要求读者的最大确认序列号不大于写者的最大序列号。
     if (rn->seq > wr->seq) {
       /* Prevent a reader from ACKing future samples (is only malicious because we require
          that rn->seq <= wr->seq) */
       rn->seq = wr->seq;
     }
+    //更新读者节点的 AVL 树，以确保 AVL 树的正确性。
     ddsrt_avl_augment_update (&ddsi_wr_readers_treedef, rn);
+    //const unsigned n = ddsi_remove_acked_messages (wr, &whcst, &deferred_free_list);：调用函数 ddsi_remove_acked_messages，将已确认的消息从写者中移除，并返回移除的消息数量。
     const unsigned n = ddsi_remove_acked_messages (wr, &whcst, &deferred_free_list);
+    //获取写者（wr）的 Whc 状态信息。
     RSTTRACE (" ACK%"PRIu64" RM%u", n_ack, n);
   }
+  //如果确认消息的序列号不大于当前已确认的最大序列号减一，则执行下面的逻辑。
   else
   {
     /* There's actually no guarantee that we need this information */
@@ -921,21 +939,29 @@ static int handle_AckNack (struct ddsi_receiver_state *rst, ddsrt_etime_t tnow, 
 
   /* If this reader was marked as "non-responsive" in the past, it's now responding again,
      so update its status */
+     //当代理读者的序列号等于 DDSI_MAX_SEQ_NUMBER 时，意味着代理读者尚未收到任何数据，或者在某些情况下可能表示代理读者的状态已经被重置或者暂时不可用。
+     //如果代理读者的序列号为 DDSI_MAX_SEQ_NUMBER，并且可靠性要求为可靠传输，则更新相关状态。
   if (rn->seq == DDSI_MAX_SEQ_NUMBER && prd->c.xqos->reliability.kind == DDS_RELIABILITY_RELIABLE)
   {
     ddsi_seqno_t oldest_seq;
+    //如果 Whc 状态信息为空，则将 oldest_seq 设置为写者的最大序列号，否则设置为 Whc 状态信息中的最大序列号。
     oldest_seq = DDSI_WHCST_ISEMPTY(&whcst) ? wr->seq : whcst.max_seq;
+    //将读者节点标记为已经回复心跳消息，因为此前可能为了确保心跳消息发送而暂时清除了该标志。
     rn->has_replied_to_hb = 1; /* was temporarily cleared to ensure heartbeats went out */
+    //更新读者节点的序列号为接收到的确认消息中的基本序列号减一。
     rn->seq = seqbase - 1;
+    //果 oldest_seq 大于读者节点的序列号，则将读者节点的序列号设置为 oldest_seq，这是为了防止读者降低 Whc 中保留的最小序列号。
     if (oldest_seq > rn->seq) {
       /* Prevent a malicious reader from lowering the min. sequence number retained in the WHC. */
       rn->seq = oldest_seq;
     }
+    //if (rn->seq > wr->seq)：如果读者节点的序列号大于写者的最大序列号，则将读者节点的序列号设置为写者的最大序列号，以防止读者确认未来的样本
     if (rn->seq > wr->seq) {
       /* Prevent a reader from ACKing future samples (is only malicious because we require
          that rn->seq <= wr->seq) */
       rn->seq = wr->seq;
     }
+    //记录日志，表示写者正在考虑将读者节点标记为再次响应。
     ddsrt_avl_augment_update (&ddsi_wr_readers_treedef, rn);
     DDS_CLOG (DDS_LC_THROTTLE, &rst->gv->logconfig, "writer "PGUIDFMT" considering reader "PGUIDFMT" responsive again\n", PGUID (wr->e.guid), PGUID (rn->prd_guid));
   }
@@ -943,10 +969,12 @@ static int handle_AckNack (struct ddsi_receiver_state *rst, ddsrt_etime_t tnow, 
   /* Second, the NACK bits (literally, that is). To do so, attempt to
      classify the AckNack for reverse-engineered compatibility with
      RTI's invalid acks and sometimes slightly odd behaviour. */
+
   numbits = msg->readerSNState.numbits;
   msgs_sent = 0;
   msgs_lost = 0;
   max_seq_in_reply = 0;
+  //如果代理读者尚未回复心跳且收到了纯确认消息，则更新相关状态。
   if (!rn->has_replied_to_hb && is_pure_nonhist_ack)
   {
     RSTTRACE (" setting-has-replied-to-hb");
@@ -955,6 +983,7 @@ static int handle_AckNack (struct ddsi_receiver_state *rst, ddsrt_etime_t tnow, 
        have their unack'ed info updated */
     ddsrt_avl_augment_update (&ddsi_wr_readers_treedef, rn);
   }
+  //如果是预先否认消息，则根据一些条件执行相应的操作
   if (is_preemptive_ack)
   {
     /* Pre-emptive nack: RTI uses (seqbase = 0, numbits = 0), we use
@@ -979,6 +1008,7 @@ static int handle_AckNack (struct ddsi_receiver_state *rst, ddsrt_etime_t tnow, 
       seqbase = whcst.min_seq;
     }
   }
+  //如果代理读者尚未被认为与写入者同步，则根据条件进行相应的处理。
   else if (!rn->assumed_in_sync)
   {
     /* We assume a remote reader that hasn't ever sent a pure Ack --
@@ -1013,11 +1043,13 @@ static int handle_AckNack (struct ddsi_receiver_state *rst, ddsrt_etime_t tnow, 
      hasn't been transmitted ever, the initial transmit should solve
      that issue; if it has, then the timing is terribly unlucky, but
      a future request'll fix it. */
+     //如果设置了测试标志 test_suppress_retransmit 并且 numbits 大于 0，则将 numbits 设置为 0。
   if (wr->test_suppress_retransmit && numbits > 0)
   {
     RSTTRACE (" test_suppress_retransmit");
     numbits = 0;
   }
+  //这段代码根据收到的 NACK 位和一些条件执行相应的操作，例如重传消息或更新间隙信息。
   enqueued = 1;
   seq_xmit = ddsi_writer_read_seq_xmit (wr);
   ddsi_gap_info_init(&gi);
@@ -1046,6 +1078,7 @@ static int handle_AckNack (struct ddsi_receiver_state *rst, ddsrt_etime_t tnow, 
           if (tstamp.v > sample.last_rexmit_ts.v + rst->gv->config.retransmit_merging_period)
           {
             RSTTRACE (" RX%"PRIu64, seqbase + i);
+            //重传数据
             enqueued = (ddsi_enqueue_sample_wrlock_held (wr, seq, sample.serdata, NULL, 0) >= 0);
             if (enqueued)
             {
@@ -1096,6 +1129,7 @@ static int handle_AckNack (struct ddsi_receiver_state *rst, ddsrt_etime_t tnow, 
         }
         ddsi_whc_return_sample(wr->whc, &sample, true);
       }
+      //如果代理读者被认为已经与写入者同步，且未发送消息且未丢失任何消息，则更新间隙信息。
       else
       {
         ddsi_gap_info_update (rst->gv, &gi, seqbase + i);
@@ -1124,9 +1158,10 @@ static int handle_AckNack (struct ddsi_receiver_state *rst, ddsrt_etime_t tnow, 
       msgs_sent++;
     }
   }
-
+//收到NACK重传会携带心跳
   wr->rexmit_count += msgs_sent;
   wr->rexmit_lost_count += msgs_lost;
+  //如果发送了消息，则打印相应的日志
   if (msgs_sent)
   {
     RSTTRACE (" rexmit#%"PRIu32" maxseq:%"PRIu64"<%"PRIu64"<=%"PRIu64"", msgs_sent, max_seq_in_reply, seq_xmit, wr->seq);
